@@ -479,7 +479,7 @@ function levelCompare(c, S) {
 // Best zone per 5-level bracket from XP per hour (at least 15 minutes in the zone).
 function bestZones(c) {
   const rows = arr(c.zoneLevels).filter(r => r && r.zone && r.level);
-  if (!rows.length) return `<div class="empty">Recorded from LevelTrail 1.3 on: play a bit and export again.</div>`;
+  if (!rows.length) return `<div class="empty">Recorded by LevelTrail 1.3 (coming soon): play a bit with it and export again.</div>`;
   const brackets = {};
   rows.forEach(r => {
     const b = Math.floor((r.level - 1) / 5) * 5 + 1;
@@ -509,7 +509,7 @@ function restedBlock(c) {
 
 function travelBlock(c) {
   const t = c.travel;
-  if (!t) return `<div class="empty">Recorded from LevelTrail 1.3 on.</div>`;
+  if (!t) return `<div class="empty">Recorded by LevelTrail 1.3 (coming soon).</div>`;
   const total = (+t.flight || 0) + (+t.ghost || 0);
   const share = c.online ? pct(total, c.online) : 0;
   const byL = t.byLevel ? Object.keys(t.byLevel).map(Number).filter(isFinite).sort((a, b) => b - a).slice(0, 8) : [];
@@ -519,12 +519,12 @@ function travelBlock(c) {
 
 function questBlock(c, S) {
   const q = c.questStats;
-  if (!q) return `<div class="empty">Update LevelTrail to see quest numbers.</div>`;
+  if (!q) return `<div class="empty">Import your export again to see quest numbers.</div>`;
   const by = q.byLevel ? Object.keys(q.byLevel).map(Number).filter(isFinite).sort((a, b) => a - b) : [];
   const max = Math.max(1, ...by.map(l => +q.byLevel[l] || +q.byLevel[String(l)] || 0));
   const qxp = S.xs ? +S.xs.quest || 0 : 0;
   return `<div class="mini"><div><div class="l">Quests completed</div><div class="v">${num(q.completed)}</div></div><div><div class="l">Quest log</div><div class="v">${num(q.log)}<span class="small"> / 20</span></div><div class="small">${num(q.logComplete)} ready to turn in</div></div><div><div class="l">XP per quest</div><div class="v">${by.length && qxp ? num(Math.round(qxp / by.reduce((a, l) => a + (+q.byLevel[l] || +q.byLevel[String(l)] || 0), 0))) : "–"}</div></div></div>
-    ${by.length ? `<div class="bars">${by.slice(-10).reverse().map(l => { const n = +q.byLevel[l] || +q.byLevel[String(l)] || 0; return barRow(`Level ${l}`, n, max, `${n} quests`); }).join("")}</div>` : `<p class="small">Quests per level are counted from LevelTrail 1.3 on.</p>`}`;
+    ${by.length ? `<div class="bars">${by.slice(-10).reverse().map(l => { const n = +q.byLevel[l] || +q.byLevel[String(l)] || 0; return barRow(`Level ${l}`, n, max, `${n} quests`); }).join("")}</div>` : `<p class="small">Quests per level are counted by LevelTrail 1.3 (coming soon).</p>`}`;
 }
 
 function profBlock(c) {
@@ -540,7 +540,7 @@ function profBlock(c) {
 
 function gearBlock(c) {
   const g = c.gear;
-  if (!g || !Object.keys(g).length) return `<div class="empty">Import an export made with LevelTrail 1.3 or later to see your gear.</div>`;
+  if (!g || !Object.keys(g).length) return `<div class="empty">Import your export again to see your gear.</div>`;
   const filled = SLOT_ORDER.filter(([k]) => g[k] && g[k].ilvl);
   const avg = filled.length ? filled.reduce((a, [k]) => a + (+g[k].ilvl || 0), 0) / filled.length : 0;
   const weakest = [...filled].sort((a, b) => (+g[a[0]].ilvl || 0) - (+g[b[0]].ilvl || 0)).slice(0, 3).map(([k]) => k);
@@ -566,7 +566,7 @@ function talentBlock(c) {
 
 function repBlock(c) {
   const r = arr(c.reputation).filter(f => f && f.name && f.max != null);
-  if (!r.length) return `<div class="empty">Update LevelTrail to see your reputation.</div>`;
+  if (!r.length) return `<div class="empty">Import your export again to see your reputation.</div>`;
   const rows = r.sort((a, b) => (+b.standing || 0) - (+a.standing || 0) || ((+b.value || 0) - (+b.min || 0)) - ((+a.value || 0) - (+a.min || 0)));
   return `<div class="bars" style="max-height:300px;overflow:auto">${rows.map(f => {
     const into = (+f.value || 0) - (+f.min || 0), span = Math.max(1, (+f.max || 0) - (+f.min || 0));
@@ -604,7 +604,7 @@ function sessionRecap(c) {
 function dungeonBlock(c) {
   const d = arr(c.dungeons);
   const run = c.dungeonRun;
-  if (!d.length) return `<div class="empty">${run ? `Running: ${esc(run.name)} since ${esc(run.date)}. ` : ""}No finished dungeon visit yet. Visits are recorded from LevelTrail 1.3 on.</div>`;
+  if (!d.length) return `<div class="empty">${run ? `Running: ${esc(run.name)} since ${esc(run.date)}. ` : ""}No finished dungeon visit yet. Visits are recorded by LevelTrail 1.3 (coming soon).</div>`;
   const qRate = (c.pace && +c.pace.xpPerHour) || (arr(c.zones).length ? (() => { const t = arr(c.zones).reduce((a, z) => a + (+z.time || 0), 0), x = arr(c.zones).reduce((a, z) => a + (+z.xp || 0), 0); return xph(x, t); })() : null);
   const by = {};
   d.forEach(r => { const b = by[r.name] = by[r.name] || { n: 0, min: 0, xp: 0, copper: 0, loot: 0, deaths: 0 }; b.n++; b.min += +r.minutes || 0; b.xp += +r.xp || 0; b.copper += +r.copper || 0; b.loot += +r.loot || 0; b.deaths += +r.deaths || 0; });
