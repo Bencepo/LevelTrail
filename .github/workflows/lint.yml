@@ -10,7 +10,7 @@ jobs:
   luacheck:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # luacheck kommt als Docker-Image statt per apt (die apt-Installation hing bzw. brach mit Exit 100 ab).
       - name: Install luacheck

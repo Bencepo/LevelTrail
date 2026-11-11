@@ -3,7 +3,9 @@
 --
 -- Records a character's leveling into SavedVariables: a snapshot of the character
 -- (gold, bags, gear, professions, quests, talents, reputation) plus a history of
--- level splits, XP sources, play sessions, deaths, gold and repairs.
+-- level splits, XP sources, play sessions, deaths, gold, repairs and time/XP per zone.
+-- A small tracker window (/trail hud) shows the pace: XP per hour and the time to the
+-- next level and to the level cap.
 -- /trail shows everything as JSON to copy into a companion app.
 -- The game writes the file on /reload and on logout:
 --   WTF\Account\<ACCOUNT>\SavedVariables\LevelTrail.lua
@@ -11,7 +13,7 @@
 LevelTrailDB = LevelTrailDB or {}
 
 local ADDON = ...
-local VERSION = 6 -- data version
+local VERSION = 7 -- data version
 local GetMetadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 local ADDON_VERSION = GetMetadata and GetMetadata(ADDON, "Version") or ""
 if ADDON_VERSION == "" or ADDON_VERSION:find("^@") then ADDON_VERSION = "dev" end
@@ -51,15 +53,39 @@ end
 ---------------------------------------------------------------- online clock and level splits
 -- Online time is counted by the addon itself (once a minute while logged in), so it
 -- starts at the install. A level the addon did not see from its start is "partial".
-local clockLast
+local clockLast, clockZone
+
+local function currentZone()
+  local z = GetRealZoneText and GetRealZoneText() or ""
+  if z == "" then return nil end
+  return z
+end
+
+-- Per-zone totals: online seconds, XP and deaths.
+local function zoneRec(s, zone)
+  if not zone then return nil end
+  s.zones = s.zones or {}
+  local z = s.zones[zone]
+  if not z then
+    z = { time = 0, xp = 0, deaths = 0, first = date("%Y-%m-%d") }
+    s.zones[zone] = z
+  end
+  return z
+end
+
 local function clockTick()
   local s = store()
   local now = time()
   if clockLast then
     local d = now - clockLast
-    if d > 0 and d <= 600 then s.online = (s.online or 0) + d end
+    if d > 0 and d <= 600 then
+      s.online = (s.online or 0) + d
+      local z = zoneRec(s, clockZone)
+      if z then z.time = z.time + d; z.last = date("%Y-%m-%d") end
+    end
   end
   clockLast = now
+  clockZone = currentZone()
 end
 
 local function levelInit()
@@ -124,6 +150,10 @@ local function addXP(level, field, amount)
   local b = x.byLevel[key] or { quest = 0, kill = 0, explore = 0, total = 0 }
   x.byLevel[key] = b
   b[field] = (b[field] or 0) + amount
+  if field == "total" then
+    local z = zoneRec(s, currentZone())
+    if z then z.xp = z.xp + amount end
+  end
 end
 
 ---------------------------------------------------------------- library books (WoW Forever)
@@ -201,6 +231,8 @@ local function onDeath()
     zone = GetRealZoneText and GetRealZoneText() or "", subzone = GetSubZoneText and GetSubZoneText() or "" }
   while #s.deaths > 100 do table.remove(s.deaths, 1) end
   s.deathCount = (s.deathCount or 0) + 1
+  local z = zoneRec(s, currentZone())
+  if z then z.deaths = z.deaths + 1 end
 end
 
 local function goldDay(s)
@@ -694,6 +726,87 @@ local function scanBank()
     debug = { C_Bank = funcNames(C_Bank) } }
 end
 
+---------------------------------------------------------------- pace (XP per hour, time to the next level and the cap)
+-- XP needed for each level up to 60 (Classic table). If the game reports a different
+-- value for the current level, the remaining levels are scaled by the same factor.
+local XP_TABLE = { 400, 900, 1400, 2100, 2800, 3600, 4500, 5400, 6500, 7600, 8800, 10100, 11400, 12900, 14400,
+  16000, 17700, 19400, 21300, 23200, 25200, 27300, 29400, 31700, 34000, 36400, 38900, 41400, 44300, 47400,
+  50800, 54500, 58600, 62800, 67100, 71600, 76100, 80800, 85700, 90700, 95800, 101000, 106300, 111800, 117500,
+  123200, 129100, 135100, 141200, 147500, 153900, 160400, 167100, 173900, 180800, 187900, 195000, 202300, 209800 }
+
+local function maxLevel()
+  local m = try(GetMaxPlayerLevel)
+  if type(m) == "number" and m > 0 then return m end
+  return 60
+end
+
+local function xpForLevel(level, scale)
+  local v = XP_TABLE[level]
+  if not v then return nil end
+  return math.floor(v * (scale or 1) + 0.5)
+end
+
+-- XP per online hour from the last full levels (up to 5) plus the running level.
+-- Session XP per hour comes from the current play session.
+local function pace(s)
+  s = s or store()
+  local level = UnitLevel("player") or s.level or 0
+  local xp = UnitXP("player") or s.xp or 0
+  local xpMax = UnitXPMax("player") or s.xpMax or 0
+  local cap = maxLevel()
+  local out = { level = level, maxLevel = cap }
+  if level >= cap or xpMax == 0 then out.atCap = level >= cap or nil; return out end
+  local scale = XP_TABLE[level] and xpMax / XP_TABLE[level] or 1
+  local gained, secs, used = 0, 0, 0
+  local splits = s.splits or {}
+  for i = #splits, 1, -1 do
+    local sp = splits[i]
+    if used >= 5 then break end
+    if sp.dur and sp.dur > 0 and not sp.partial then
+      local need = xpForLevel(sp.level - 1, scale)
+      if need then gained, secs, used = gained + need, secs + sp.dur, used + 1 end
+    end
+  end
+  local since = s.levelSince
+  if since and since.level == level and not since.partial and s.online and since.online then
+    local d = s.online - since.online
+    if d > 300 then gained, secs = gained + xp, secs + d end
+  end
+  if secs > 0 and gained > 0 then out.xpPerHour = math.floor(gained / secs * 3600 + 0.5) end
+  out.levelsUsed = used
+  local cur = s.session
+  if cur and cur.start and (time() - (cur.last or 0)) <= 900 then
+    local d = time() - cur.start
+    out.sessionMinutes = math.floor(d / 60)
+    if d >= 300 and (cur.xpGained or 0) > 0 then out.sessionXpPerHour = math.floor(cur.xpGained / d * 3600 + 0.5) end
+  end
+  local toNext = xpMax - xp
+  local toCap = toNext
+  for L = level + 1, cap - 1 do toCap = toCap + (xpForLevel(L, scale) or 0) end
+  out.xpToNext, out.xpToCap = toNext, toCap
+  local rate = out.xpPerHour or out.sessionXpPerHour
+  if rate and rate > 0 then
+    out.secToNext = math.floor(toNext / rate * 3600 + 0.5)
+    out.secToCap = math.floor(toCap / rate * 3600 + 0.5)
+    out.rateFrom = out.xpPerHour and "levels" or "session"
+  end
+  return out
+end
+
+local function hm(sec)
+  if not sec then return "?" end
+  local h = math.floor(sec / 3600)
+  local m = math.floor((sec % 3600) / 60)
+  if h > 0 then return h .. " h " .. m .. " min" end
+  return m .. " min"
+end
+
+local function thousands(n)
+  local str = tostring(math.floor(n or 0))
+  local out = str:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+  return (out:gsub("^,", ""))
+end
+
 ---------------------------------------------------------------- snapshot
 local function snapshot()
   local _, name, realm = charKey()
@@ -762,6 +875,7 @@ f:SetScript("OnEvent", function(_, event, ...)
     if ... == ADDON then pcall(migrate) end
   elseif event == "PLAYER_LOGIN" then
     pcall(snapshot)
+    clockZone = currentZone()
     if C_Timer and C_Timer.NewTicker then C_Timer.NewTicker(60, function() pcall(clockTick) end) end
   elseif event == "PLAYER_LOGOUT" then
     pcall(clockTick)
@@ -790,6 +904,9 @@ f:SetScript("OnEvent", function(_, event, ...)
     if n then pcall(addXP, UnitLevel("player"), "explore", n) end
   elseif event == "PLAYER_DEAD" then
     pcall(onDeath)
+  elseif event == "ZONE_CHANGED_NEW_AREA" then
+    pcall(clockTick)
+    scheduleSnapshot()
   elseif event == "MERCHANT_SHOW" then
     merchantOpen = true
     repairCost = try(GetRepairAllCost)
@@ -924,11 +1041,16 @@ local function buildExport(s)
     local v = s.sessionMonths[m]
     months[#months + 1] = { month = m, sessions = v.sessions, minutes = v.minutes, xp = v.xp, copper = v.copper }
   end
+  local zones = A()
+  for name, z in pairs(s.zones or {}) do
+    zones[#zones + 1] = { zone = name, time = z.time, xp = z.xp, deaths = z.deaths, first = z.first, last = z.last }
+  end
+  table.sort(zones, function(a, b) return (a.time or 0) > (b.time or 0) end)
   local char = { name = s.name, realm = s.realm, class = s.class, race = s.race, date = s.date, ts = s.ts,
     addonVersion = s.version, level = s.level, xp = s.xp, xpMax = s.xpMax,
     online = s.online, splits = splits, levelSince = s.levelSince, xpSources = s.xpSources,
     deaths = deaths, deathCount = s.deathCount or #allDeaths, goldDays = goldDays, repairs = s.repairs,
-    sessionMonths = months, libraryBooks = s.libraryBooks,
+    sessionMonths = months, libraryBooks = s.libraryBooks, zones = zones, pace = pace(s),
     rested = s.rested, copper = s.copper, zone = s.zone, subzone = s.subzone, hearth = s.hearth,
     bags = A({ s.bags[1] or 0, s.bags[2] or 0, s.bags[3] or 0, s.bags[4] or 0 }), backpack = s.bags.backpack,
     reagentBag = s.reagentBag, freeSlots = s.freeSlots, professions = s.professions, reputation = rep, sheets = sheets,
@@ -961,7 +1083,7 @@ local function buildExport(s)
   end
   local spellList = A()
   for _, n in ipairs(order) do spellList[#spellList + 1] = best[n] end
-  return { levelTrail = 2, bencepoExport = 1, char = char,
+  return { levelTrail = 3, bencepoExport = 1, char = char,
     quests = { date = s.date, log = log, completed = A(s.completedQuests) },
     recipes = { date = s.date, known = known, inRange = open },
     spells = { date = s.date, spells = spellList },
@@ -1021,6 +1143,112 @@ local function showExport(text, summary)
   exportFrame.edit:HighlightText()
 end
 
+---------------------------------------------------------------- tracker window (/trail hud)
+-- A small movable window with the running level, XP per hour and the time to the next
+-- level and the cap. Whether it is shown is kept per character.
+local hud
+local function hudLines()
+  local s = store()
+  local p = pace(s)
+  local lines = {}
+  local xp, xpMax = UnitXP("player") or 0, UnitXPMax("player") or 0
+  if p.atCap then
+    lines[1] = ("Level %d, the cap"):format(p.level)
+  else
+    lines[1] = ("Level %d  %d%%"):format(p.level, xpMax > 0 and math.floor(xp / xpMax * 100) or 0)
+  end
+  local since = s.levelSince
+  if since and since.level == p.level and s.online and since.online then
+    lines[#lines + 1] = "On this level: " .. hm(s.online - since.online) .. (since.partial and " (since install)" or "")
+  end
+  if p.sessionXpPerHour then
+    lines[#lines + 1] = "Session: " .. thousands(p.sessionXpPerHour) .. " XP/h, " .. hm((p.sessionMinutes or 0) * 60)
+  elseif p.sessionMinutes then
+    lines[#lines + 1] = "Session: " .. hm(p.sessionMinutes * 60)
+  end
+  if p.xpPerHour then
+    lines[#lines + 1] = "Pace: " .. thousands(p.xpPerHour) .. " XP/h (last " .. (p.levelsUsed or 0) .. " levels)"
+  end
+  if not p.atCap then
+    if p.secToNext then
+      lines[#lines + 1] = "Next level: " .. hm(p.secToNext)
+      lines[#lines + 1] = ("Level %d: %s online"):format(p.maxLevel, hm(p.secToCap))
+    else
+      lines[#lines + 1] = "Time to level: after the first full level"
+    end
+  end
+  return table.concat(lines, "\n")
+end
+
+local function hudUpdate()
+  if hud and hud:IsShown() then
+    local ok, text = pcall(hudLines)
+    hud.text:SetText(ok and text or "LevelTrail: " .. tostring(text))
+    hud:SetHeight(hud.text:GetStringHeight() + 16)
+  end
+end
+
+local function hudCreate()
+  if hud then return hud end
+  local win = CreateFrame("Frame", "LevelTrailTracker", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  win:SetSize(230, 80)
+  win:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -220, -200)
+  win:SetFrameStrata("MEDIUM")
+  win:SetClampedToScreen(true)
+  win:SetMovable(true)
+  win:EnableMouse(true)
+  win:RegisterForDrag("LeftButton")
+  win:SetScript("OnDragStart", win.StartMoving)
+  win:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    local point, _, rel, x, y = self:GetPoint()
+    local st = store()
+    st.hud = st.hud or {}
+    st.hud.point, st.hud.rel, st.hud.x, st.hud.y = point, rel, x, y
+  end)
+  if win.SetBackdrop then
+    win:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+      edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 12,
+      insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+    win:SetBackdropColor(0, 0, 0, 0.6)
+  end
+  win.text = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  win.text:SetPoint("TOPLEFT", 8, -8)
+  win.text:SetPoint("RIGHT", -8, 0)
+  win.text:SetJustifyH("LEFT")
+  local st = store().hud
+  if st and st.point then
+    win:ClearAllPoints()
+    win:SetPoint(st.point, UIParent, st.rel or st.point, st.x or 0, st.y or 0)
+  end
+  local acc = 0
+  win:SetScript("OnUpdate", function(_, elapsed)
+    acc = acc + elapsed
+    if acc >= 2 then acc = 0; hudUpdate() end
+  end)
+  hud = win
+  return win
+end
+
+local function hudShow(show)
+  local st = store()
+  st.hud = st.hud or {}
+  st.hud.shown = show and true or false
+  if show then
+    hudCreate():Show()
+    hudUpdate()
+  elseif hud then
+    hud:Hide()
+  end
+end
+
+local hudEvents = CreateFrame("Frame")
+hudEvents:RegisterEvent("PLAYER_LOGIN")
+hudEvents:SetScript("OnEvent", function()
+  local st = store().hud
+  if st and st.shown then pcall(hudShow, true) end
+end)
+
 ---------------------------------------------------------------- slash command
 local function count(t)
   local n = 0
@@ -1043,6 +1271,21 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
   local summary = "Level " .. tostring(s.level) .. ", " .. g .. "g " .. sv .. "s, " .. tostring(s.zone) ..
     (lb and (", library books " .. lb.count .. "/" .. lb.total) or "") .. " | " ..
     count(s.equipped) .. " items, " .. tal .. " talents, " .. #s.questLog .. " quests, " .. count(s.recipes) .. " professions with recipes"
+  msg = (msg or ""):lower():match("^%s*(.-)%s*$")
+  if msg == "hud" then
+    local on = not (hud and hud:IsShown())
+    local okH, errH = pcall(hudShow, on)
+    if not okH then print("|cffff5555LevelTrail: tracker failed:|r " .. tostring(errH)) end
+    return
+  elseif msg == "help" then
+    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail hud: tracker window on/off")
+    return
+  end
+  local okP, p = pcall(pace, s)
+  if okP and p and p.secToNext then
+    summary = summary .. " | " .. thousands(p.xpPerHour or p.sessionXpPerHour) .. " XP/h, next level in " ..
+      hm(p.secToNext) .. ", level " .. p.maxLevel .. " in " .. hm(p.secToCap)
+  end
   if msg == "chat" then
     print("|cff7fbf3f" .. TITLE .. "|r " .. summary)
     return
