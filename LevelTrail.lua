@@ -1014,7 +1014,7 @@ local function showExport(text, summary)
     exportFrame = f
   end
   exportFrame.text = text
-  exportFrame.info:SetText((summary or "") .. "\nPress Ctrl+C, then paste into the app (Overview, Import). Esc closes.")
+  exportFrame.info:SetText((summary or "") .. "\nPress Ctrl+C, then paste it at bencepo.github.io/leveltrail. Esc closes.")
   exportFrame.edit:SetText(text)
   exportFrame:Show()
   exportFrame.edit:SetFocus()

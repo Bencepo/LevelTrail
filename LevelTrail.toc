@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: LevelTrail
-## Notes: Records your leveling: level splits, XP sources, sessions, deaths, gold, gear and quests. /trail shows a copyable export for companion apps.
-## Notes-deDE: Zeichnet dein Leveln auf: Level-Splits, XP-Quellen, Sitzungen, Tode, Gold, Ausrüstung und Quests. /trail zeigt einen kopierbaren Export für Begleit-Apps.
+## Notes: Records your leveling: level splits, XP sources, sessions, deaths, gold, gear and quests. /trail shows a copyable export for the web viewer at bencepo.github.io/leveltrail.
+## Notes-deDE: Zeichnet dein Leveln auf: Level-Splits, XP-Quellen, Sitzungen, Tode, Gold, Ausrüstung und Quests. /trail zeigt einen kopierbaren Export für die Webansicht auf bencepo.github.io/leveltrail.
 ## Author: Bencepo
 ## Version: @project-version@
 ## X-License: All Rights Reserved

@@ -1,0 +1,15 @@
+package-as: LevelTrail
+
+ignore:
+  - .github
+  - .pkgmeta
+  - "*.md"
+  - .luacheckrc
+  - web
+  - app
+  - legacy
+  - migration
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown

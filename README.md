@@ -1,6 +1,6 @@
 # LevelTrail
 
-A World of Warcraft: Forever addon that records your leveling and hands it to a companion app.
+A World of Warcraft: Forever addon that records your leveling run. See it at **https://bencepo.github.io/leveltrail/**: paste the export, and the page shows time per level, XP sources, deaths, gold, library books, your alts and a share image. The page runs in your browser and uploads nothing.
 
 ## What it records
 
@@ -17,7 +17,7 @@ Snapshots are taken automatically on level-up, quest turn-in, zone change, gear 
 
 ## Getting the data out
 
-Type `/trail` (or `/lt`) in the game. A window shows the export as JSON, already selected: press Ctrl+C and paste it into the companion app.
+Type `/trail` (or `/lt`) in the game. A window shows the export as JSON, already selected: press Ctrl+C and paste it at https://bencepo.github.io/leveltrail/ (or into any app that reads the format).
 The game also writes everything to `WTF\Account\<ACCOUNT>\SavedVariables\LevelTrail.lua` on `/reload` and on logout.
 
 `/trail chat` prints a one-line summary instead.
@@ -25,6 +25,10 @@ The game also writes everything to `WTF\Account\<ACCOUNT>\SavedVariables\LevelTr
 ## Former name
 
 LevelTrail was called BencepoExport. On the first login it takes over the old data, as long as the `BencepoExport` folder is still installed (the stub in `migration/` is enough). After that the old folder can be deleted.
+
+## Web viewer
+
+The page lives in `web/index.html` and is published from the public repo `Bencepo/bencepo.github.io` (folder `leveltrail/`). After changing it, copy the file there and push.
 
 ## Notes
 
