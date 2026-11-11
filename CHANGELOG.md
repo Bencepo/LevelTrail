@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased (1.3.0)
+
+- Best zone per level: online time and XP per zone and level (`char.zoneLevels`).
+- Session recap: kills, quests, deaths and vendor value of the loot per play session; `/trail session` shows the running session in chat.
+- Dungeon runs: every visit to a dungeon or raid with time, XP, gold, kills, deaths and loot (`char.dungeons`, last 50).
+- Travel time: time on flights and corpse runs, in total and per level (`char.travel`).
+- Quest numbers (`char.questStats`: completed, quest log, quests per level) and talent trees with points (`char.talentTrees`).
+- Web viewer: level times compared with your other characters, best zone for your level, rested XP, travel time, quests, talents (unspent points), gear (weakest slots), professions (at the cap), reputation, death analysis, last session recap, dungeons.
+
 ## 1.2.0-beta
 
 - Minimap button (LibDBIcon, so minimap button collectors can take it): left-click opens the export for the web page, right-click turns the tracker window on or off, drag to move. `/trail minimap` hides or shows it. LevelTrail also appears in the game's addon menu next to the minimap.

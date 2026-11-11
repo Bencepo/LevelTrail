@@ -12,6 +12,10 @@ A World of Warcraft: Forever addon that records your leveling run. See it at **h
 - **Gold and repairs**: gold per day (last 120 days) and repair costs.
 - **Pace**: XP per hour from your last five full levels and from the current session, and the online time still needed for the next level and for level 60.
 - **Zones**: online time, XP and deaths per zone.
+- **Best zone per level**: online time and XP per zone and level, so the web viewer can show where you level fastest.
+- **Session recap**: kills, quests, deaths and loot value per play session (`/trail session` for the running one).
+- **Dungeon runs**: time, XP, gold, kills, deaths and loot per dungeon or raid visit.
+- **Travel time**: time on flights and corpse runs.
 - **Library books** (WoW Forever): which of the 40 books are handed in and which reward quests (10, 20, 25 books) are done, read from the completed quests, so books handed in before the install count too.
 - **Several characters**: each character is kept separately.
 

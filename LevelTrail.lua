@@ -13,7 +13,7 @@
 LevelTrailDB = LevelTrailDB or {}
 
 local ADDON = ...
-local VERSION = 7 -- data version
+local VERSION = 8 -- data version
 local GetMetadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 local ADDON_VERSION = GetMetadata and GetMetadata(ADDON, "Version") or ""
 if ADDON_VERSION == "" or ADDON_VERSION:find("^@") then ADDON_VERSION = "dev" end
@@ -73,6 +73,18 @@ local function zoneRec(s, zone)
   return z
 end
 
+-- Per zone and level: online seconds (t) and XP (x), for the best zone per level range.
+local function zoneLevelRec(s, zone, level)
+  level = tonumber(level)
+  if not zone or not level or level < 1 then return nil end
+  s.zoneLevels = s.zoneLevels or {}
+  local z = s.zoneLevels[zone] or {}
+  s.zoneLevels[zone] = z
+  local r = z[level]
+  if not r then r = { t = 0, x = 0 }; z[level] = r end
+  return r
+end
+
 local function clockTick()
   local s = store()
   local now = time()
@@ -82,6 +94,9 @@ local function clockTick()
       s.online = (s.online or 0) + d
       local z = zoneRec(s, clockZone)
       if z then z.time = z.time + d; z.last = date("%Y-%m-%d") end
+      local zl = zoneLevelRec(s, clockZone, UnitLevel("player"))
+      if zl then zl.t = zl.t + d end
+      if s.dungeonRun then s.dungeonRun.last = now end
     end
   end
   clockLast = now
@@ -151,8 +166,115 @@ local function addXP(level, field, amount)
   x.byLevel[key] = b
   b[field] = (b[field] or 0) + amount
   if field == "total" then
-    local z = zoneRec(s, currentZone())
+    local zone = currentZone()
+    local z = zoneRec(s, zone)
     if z then z.xp = z.xp + amount end
+    local zl = zoneLevelRec(s, zone, level or UnitLevel("player"))
+    if zl then zl.x = zl.x + amount end
+  end
+end
+
+---------------------------------------------------------------- counters (session recap and dungeon runs)
+-- Kills (with XP), quests, deaths and loot value count for the running play session
+-- and, inside an instance, for the running dungeon visit.
+local function bump(field, n)
+  n = tonumber(n) or 1
+  local s = store()
+  for _, rec in ipairs({ s.session, s.dungeonRun }) do
+    if rec then rec[field] = (rec[field] or 0) + n end
+  end
+end
+
+-- Vendor value of looted items, from the game's own loot lines.
+local LOOT_MULTI = toPattern(LOOT_ITEM_SELF_MULTIPLE)
+local LOOT_SINGLE = toPattern(LOOT_ITEM_SELF)
+local function lootValue(msg)
+  if type(msg) ~= "string" then return 0 end
+  local link, count
+  if LOOT_MULTI then link, count = msg:match(LOOT_MULTI) end
+  if not link and LOOT_SINGLE then link = msg:match(LOOT_SINGLE) end
+  if not link then return 0 end
+  if not GetItemInfo then return 0 end
+  -- try() returns at most 8 values; the sell price is the 11th
+  local r = { pcall(GetItemInfo, link) }
+  if not r[1] then return 0 end
+  return (tonumber(r[12]) or 0) * (tonumber(count) or 1)
+end
+
+---------------------------------------------------------------- dungeon runs
+local function xpTotal(s) return (s.xpSources and s.xpSources.total) or 0 end
+
+local function dungeonFinish(s)
+  local run = s.dungeonRun
+  if not run then return end
+  s.dungeonRun = nil
+  local stop = run.last or time()
+  local minutes = math.floor((stop - run.start) / 60)
+  if minutes < 2 then return end
+  s.dungeons = s.dungeons or {}
+  s.dungeons[#s.dungeons + 1] = { name = run.name, type = run.type, date = run.date, level = run.level,
+    minutes = minutes, xp = xpTotal(s) - (run.xp0 or 0), copper = (GetMoney() or 0) - (run.copper0 or 0),
+    kills = run.kills or 0, deaths = run.deaths or 0, loot = run.loot or 0 }
+  while #s.dungeons > 50 do table.remove(s.dungeons, 1) end
+end
+
+local function dungeonCheck()
+  local s = store()
+  local inside, kind = try(IsInInstance)
+  local name = inside and (try(GetInstanceInfo)) or nil
+  local run = s.dungeonRun
+  if run and (time() - (run.last or run.start)) > 1800 then dungeonFinish(s); run = nil end
+  if inside and (kind == "party" or kind == "raid") and name then
+    if run and run.name ~= name then dungeonFinish(s); run = nil end
+    if not run then
+      s.dungeonRun = { name = name, type = kind, start = time(), last = time(), date = date("%Y-%m-%d %H:%M"),
+        level = UnitLevel("player"), xp0 = xpTotal(s), copper0 = GetMoney() or 0 }
+    else
+      run.last = time()
+    end
+  elseif run and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("player")) then
+    -- left the instance alive; a corpse run back in keeps the visit going
+    run.last = time()
+    dungeonFinish(s)
+  end
+end
+
+---------------------------------------------------------------- travel (flights and corpse runs)
+local flightStart, deadStart
+
+local function travelRec(s)
+  local t = s.travel or { flight = 0, flights = 0, ghost = 0, ghostRuns = 0, byLevel = {} }
+  t.byLevel = t.byLevel or {}
+  s.travel = t
+  return t
+end
+
+local function travelAdd(kind, sec)
+  if not sec or sec <= 0 or sec > 3600 then return end
+  local s = store()
+  local t = travelRec(s)
+  t[kind] = (t[kind] or 0) + sec
+  if kind == "flight" then t.flights = (t.flights or 0) + 1 else t.ghostRuns = (t.ghostRuns or 0) + 1 end
+  local key = tostring(UnitLevel("player") or 0)
+  local b = t.byLevel[key] or { flight = 0, ghost = 0 }
+  b[kind] = (b[kind] or 0) + sec
+  t.byLevel[key] = b
+end
+
+local function flightCheck()
+  local onTaxi = UnitOnTaxi and UnitOnTaxi("player")
+  if onTaxi and not flightStart then
+    flightStart = time()
+  elseif not onTaxi and flightStart then
+    travelAdd("flight", time() - flightStart)
+    flightStart = nil
+  end
+end
+
+local function ghostCheck()
+  if deadStart and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("player")) then
+    travelAdd("ghost", time() - deadStart)
+    deadStart = nil
   end
 end
 
@@ -233,6 +355,8 @@ local function onDeath()
   s.deathCount = (s.deathCount or 0) + 1
   local z = zoneRec(s, currentZone())
   if z then z.deaths = z.deaths + 1 end
+  bump("deaths")
+  deadStart = time()
 end
 
 local function goldDay(s)
@@ -494,12 +618,19 @@ local function talents()
   if GetNumTalentTabs and GetNumTalents and GetTalentInfo then
     local tabs = try(GetNumTalentTabs) or 0
     for tab = 1, tabs do
-      local tree = { talents = {} }
+      local tree = { talents = {}, points = 0 }
+      if GetTalentTabInfo then
+        -- the tree name is the first text value (older clients start with it, newer ones with an id)
+        for _, v in ipairs({ try(GetTalentTabInfo, tab) }) do
+          if type(v) == "string" and v ~= "" then tree.name = v; break end
+        end
+      end
       local n = try(GetNumTalents, tab) or 0
       for i = 1, n do
         local name, _, tier, column, rank, maxRank = try(GetTalentInfo, tab, i)
         if name and (rank or 0) > 0 then
           tree.talents[#tree.talents + 1] = { name = name, tier = tier, column = column, rank = rank, max = maxRank }
+          tree.points = tree.points + rank
         end
       end
       out.trees[#out.trees + 1] = tree
@@ -690,7 +821,8 @@ local function sessionSave()
   s.sessions = s.sessions or {}
   local rec = { date = cur.date, minutes = math.floor((time() - cur.start) / 60),
     levelStart = cur.level, levelEnd = UnitLevel("player"),
-    xpGained = cur.xpGained, copperDelta = (GetMoney() or 0) - cur.copper }
+    xpGained = cur.xpGained, copperDelta = (GetMoney() or 0) - cur.copper,
+    kills = cur.kills or 0, quests = cur.quests or 0, deaths = cur.deaths or 0, loot = cur.loot or 0 }
   local flip = flipProfit()
   if flip then
     if not cur.flip then cur.flip = flip end
@@ -887,7 +1019,8 @@ local EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_ENTERI
   "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "SKILL_LINES_CHANGED", "ZONE_CHANGED_NEW_AREA", "PLAYER_LEVEL_UP",
   "PLAYER_XP_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "CHARACTER_POINTS_CHANGED", "BANKFRAME_OPENED",
   "PLAYERBANKSLOTS_CHANGED", "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "PLAYER_DEAD",
-  "CHAT_MSG_COMBAT_XP_GAIN", "CHAT_MSG_SYSTEM", "MERCHANT_SHOW", "MERCHANT_CLOSED", "UPDATE_INVENTORY_DURABILITY" }
+  "CHAT_MSG_COMBAT_XP_GAIN", "CHAT_MSG_SYSTEM", "MERCHANT_SHOW", "MERCHANT_CLOSED", "UPDATE_INVENTORY_DURABILITY",
+  "CHAT_MSG_LOOT", "PLAYER_CONTROL_LOST", "PLAYER_CONTROL_GAINED", "PLAYER_ALIVE", "PLAYER_UNGHOST" }
 for _, ev in ipairs(EVENTS) do pcall(f.RegisterEvent, f, ev) end
 
 local bankOpen = false
@@ -901,12 +1034,20 @@ f:SetScript("OnEvent", function(_, event, ...)
     if C_Timer and C_Timer.NewTicker then C_Timer.NewTicker(60, function() pcall(clockTick) end) end
   elseif event == "PLAYER_LOGOUT" then
     pcall(clockTick)
+    pcall(flightCheck)
   elseif event == "PLAYER_LEVEL_UP" then
     pcall(onLevelUp, ...)
     scheduleSnapshot()
   elseif event == "QUEST_TURNED_IN" then
     local questID, xpReward = ...
     pcall(addXP, UnitLevel("player"), "quest", xpReward)
+    pcall(function()
+      local s = store()
+      s.questsByLevel = s.questsByLevel or {}
+      local key = tostring(UnitLevel("player") or 0)
+      s.questsByLevel[key] = (s.questsByLevel[key] or 0) + 1
+      bump("quests")
+    end)
     if BOOK_IDS[questID] then
       -- the completed flag can lag behind the event a moment
       local function report()
@@ -920,7 +1061,18 @@ f:SetScript("OnEvent", function(_, event, ...)
     scheduleSnapshot()
   elseif event == "CHAT_MSG_COMBAT_XP_GAIN" then
     local n = numberIn(..., KILL_PATTERN)
-    if n then pcall(addXP, UnitLevel("player"), "kill", n) end
+    if n then
+      pcall(addXP, UnitLevel("player"), "kill", n)
+      pcall(bump, "kills")
+    end
+  elseif event == "CHAT_MSG_LOOT" then
+    local okV, v = pcall(lootValue, ...)
+    if okV and v > 0 then pcall(bump, "loot", v) end
+  elseif event == "PLAYER_CONTROL_LOST" or event == "PLAYER_CONTROL_GAINED" then
+    -- the taxi flag can lag behind the control event a moment
+    if C_Timer and C_Timer.After then C_Timer.After(1, function() pcall(flightCheck) end) else pcall(flightCheck) end
+  elseif event == "PLAYER_ALIVE" or event == "PLAYER_UNGHOST" then
+    pcall(ghostCheck)
   elseif event == "CHAT_MSG_SYSTEM" then
     local n = numberIn(..., EXPLORE_PATTERN)
     if n then pcall(addXP, UnitLevel("player"), "explore", n) end
@@ -928,6 +1080,11 @@ f:SetScript("OnEvent", function(_, event, ...)
     pcall(onDeath)
   elseif event == "ZONE_CHANGED_NEW_AREA" then
     pcall(clockTick)
+    pcall(dungeonCheck)
+    scheduleSnapshot()
+  elseif event == "PLAYER_ENTERING_WORLD" then
+    pcall(dungeonCheck)
+    pcall(flightCheck)
     scheduleSnapshot()
   elseif event == "MERCHANT_SHOW" then
     merchantOpen = true
@@ -1082,11 +1239,29 @@ local function buildExport(s)
     zones[#zones + 1] = { zone = name, time = z.time, xp = z.xp, deaths = z.deaths, first = z.first, last = z.last }
   end
   table.sort(zones, function(a, b) return (a.time or 0) > (b.time or 0) end)
+  local zoneLevels = A()
+  for name, levels in pairs(s.zoneLevels or {}) do
+    for lvl, r in pairs(levels) do
+      if (r.t or 0) >= 60 or (r.x or 0) > 0 then
+        zoneLevels[#zoneLevels + 1] = { zone = name, level = tonumber(lvl), time = r.t, xp = r.x }
+      end
+    end
+  end
+  local dungeons = A()
+  for _, d in ipairs(s.dungeons or {}) do dungeons[#dungeons + 1] = d end
+  local trees = A()
+  for _, t in ipairs((s.talents or {}).trees or {}) do trees[#trees + 1] = { name = t.name, points = t.points or 0 } end
+  local logDone = 0
+  for _, q in ipairs(s.questLog or {}) do if q.complete then logDone = logDone + 1 end end
+  local questStats = { completed = #(s.completedQuests or {}), log = #(s.questLog or {}), logComplete = logDone,
+    byLevel = s.questsByLevel }
   local char = { name = s.name, realm = s.realm, class = s.class, race = s.race, date = s.date, ts = s.ts,
     addonVersion = s.version, level = s.level, xp = s.xp, xpMax = s.xpMax,
     online = s.online, splits = splits, levelSince = s.levelSince, xpSources = s.xpSources,
     deaths = deaths, deathCount = s.deathCount or #allDeaths, goldDays = goldDays, repairs = s.repairs,
     sessionMonths = months, libraryBooks = s.libraryBooks, zones = zones, pace = pace(s), vendorFloor = vfOut(s.vendorFloor),
+    zoneLevels = zoneLevels, dungeons = dungeons, dungeonRun = s.dungeonRun and { name = s.dungeonRun.name, date = s.dungeonRun.date } or nil,
+    travel = s.travel, questStats = questStats, talentTrees = trees,
     rested = s.rested, copper = s.copper, zone = s.zone, subzone = s.subzone, hearth = s.hearth,
     bags = A({ s.bags[1] or 0, s.bags[2] or 0, s.bags[3] or 0, s.bags[4] or 0 }), backpack = s.bags.backpack,
     reagentBag = s.reagentBag, freeSlots = s.freeSlots, professions = s.professions, reputation = rep, sheets = sheets,
@@ -1119,7 +1294,7 @@ local function buildExport(s)
   end
   local spellList = A()
   for _, n in ipairs(order) do spellList[#spellList + 1] = best[n] end
-  return { levelTrail = 3, bencepoExport = 1, char = char,
+  return { levelTrail = 4, bencepoExport = 1, char = char,
     quests = { date = s.date, log = log, completed = A(s.completedQuests) },
     recipes = { date = s.date, known = known, inRange = open },
     spells = { date = s.date, spells = spellList },
@@ -1431,8 +1606,16 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
     if minimapButton then minimapButton:SetShown(not st.hide) end
     print("|cff7fbf3f" .. TITLE .. "|r minimap button " .. (st.hide and "hidden" or "shown"))
     return
+  elseif msg == "session" then
+    local cur = store().session
+    if not cur or not cur.start then print("|cff7fbf3fLevelTrail:|r no session yet."); return end
+    print(("|cff7fbf3fLevelTrail session|r %s: %s, %s XP, %d kills, %d quests, %d deaths, loot worth %s"):format(
+      hm(time() - cur.start), cur.level == UnitLevel("player") and ("level " .. cur.level) or (cur.level .. " -> " .. UnitLevel("player")),
+      thousands(cur.xpGained), cur.kills or 0, cur.quests or 0, cur.deaths or 0,
+      GetCoinTextureString and GetCoinTextureString(cur.loot or 0) or tostring(cur.loot or 0)))
+    return
   elseif msg == "help" then
-    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail hud: tracker window on/off, /trail minimap: minimap button on/off")
+    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail session: this session so far, /trail hud: tracker window on/off, /trail minimap: minimap button on/off")
     return
   end
   local okP, p = pcall(pace, s)
