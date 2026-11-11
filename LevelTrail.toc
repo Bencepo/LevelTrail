@@ -5,6 +5,7 @@
 ## Author: Bencepo
 ## Version: @project-version@
 ## X-License: All Rights Reserved
+## X-Curse-Project-ID: 1798692
 ## SavedVariables: LevelTrailDB
 ## OptionalDeps: BencepoExport
 
