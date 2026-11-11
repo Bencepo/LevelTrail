@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: Bencepo Export
+## Notes: Writes gold, bags, professions, zone and quests to SavedVariables for the Bencepo Leveling App.
+## Author: Claude
+## Version: 3.0
+## SavedVariables: BencepoExportDB
+
+BencepoExport.lua
