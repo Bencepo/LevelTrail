@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (1.3.0)
+## 1.3.0-beta
 
 - Best zone per level: online time and XP per zone and level (`char.zoneLevels`).
 - Session recap: kills, quests, deaths and vendor value of the loot per play session; `/trail session` shows the running session in chat.
