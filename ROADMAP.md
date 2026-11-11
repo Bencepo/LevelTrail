@@ -2,15 +2,17 @@
 
 Status as of 2026-11-11. Goal: the leveling tracker people install alongside Questie, used well beyond one character.
 
-## Now: 1.1 (in testing)
+## Now: 1.1.0-beta (released 2026-11-11, in testing)
 
 - [x] Tracker window `/trail hud`: level progress, time on the level, XP per hour, time to the next level and to 60
 - [x] Pace in the export and in `/trail chat`
 - [x] Time, XP and deaths per zone
 - [x] Web viewer: XP per hour, time to 60, zones table
+- [x] VendorFloor profit in the export and the web viewer, gold per hour per session
 - [ ] Test in game: tracker window, pace after a few levels, zone times
 - [ ] Check the list of the 40 library book quests in game (count matches 10/40 so far)
-- [ ] Release 1.1.0-beta on CurseForge
+- [x] Release 1.1.0-beta on CurseForge
+- [ ] Release 1.1.0 (stable) after the in-game test
 
 ## Next: 1.2
 
