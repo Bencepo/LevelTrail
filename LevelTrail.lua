@@ -629,7 +629,7 @@ end
 
 ---------------------------------------------------------------- snapshot
 local function snapshot()
-  local key, name, realm = charKey()
+  local _, name, realm = charKey()
   if (UnitXPMax("player") or 0) == 0 and (UnitLevel("player") or 0) < 60 then return nil end  -- not loaded yet
   local s = store()
   local sizes, items, gear, free = scanBags(0, 5)
