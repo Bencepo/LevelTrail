@@ -1,0 +1,2 @@
+-- BencepoExport has become LevelTrail. This stub only keeps BencepoExportDB loaded
+-- so that LevelTrail can take the data over on the next login. It does nothing else.
