@@ -896,14 +896,14 @@ local function buildExport(s)
   for id, c in pairs(s.items or {}) do items["i" .. id] = c end
   local bagGear = A()
   for _, g in ipairs(s.bagGear or {}) do bagGear[#bagGear + 1] = gearOut(g) end
-  local equipped = {}
+  local equippedOut = {}
   for slot, it in pairs(s.equipped or {}) do
-    if slot ~= "shirt" and slot ~= "tabard" then equipped[slot] = gearOut(it) end
+    if slot ~= "shirt" and slot ~= "tabard" then equippedOut[slot] = gearOut(it) end
   end
   local sessions = A()
   for _, x in ipairs(s.sessions or {}) do sessions[#sessions + 1] = x end
-  local talents = A()
-  for _, t in ipairs((s.talents or {}).list or {}) do talents[#talents + 1] = { name = t.name, rank = t.rank, max = t.max } end
+  local talentList = A()
+  for _, t in ipairs((s.talents or {}).list or {}) do talentList[#talentList + 1] = { name = t.name, rank = t.rank, max = t.max } end
   local rep = A()
   for _, r in ipairs(s.reputation or {}) do rep[#rep + 1] = r end
   local splits = A()
@@ -932,7 +932,7 @@ local function buildExport(s)
     rested = s.rested, copper = s.copper, zone = s.zone, subzone = s.subzone, hearth = s.hearth,
     bags = A({ s.bags[1] or 0, s.bags[2] or 0, s.bags[3] or 0, s.bags[4] or 0 }), backpack = s.bags.backpack,
     reagentBag = s.reagentBag, freeSlots = s.freeSlots, professions = s.professions, reputation = rep, sheets = sheets,
-    sessions = sessions, items = items, bagGear = bagGear, talents = talents, unspent = s.talents and s.talents.unspent,
+    sessions = sessions, items = items, bagGear = bagGear, talents = talentList, unspent = s.talents and s.talents.unspent,
     bank = s.bank and { date = s.bank.date, kinds = s.bank.kinds } or nil }
   local log = A()
   for _, q in ipairs(s.questLog or {}) do
@@ -959,42 +959,42 @@ local function buildExport(s)
       best[sp.name].rank = r
     end
   end
-  local spells = A()
-  for _, n in ipairs(order) do spells[#spells + 1] = best[n] end
+  local spellList = A()
+  for _, n in ipairs(order) do spellList[#spellList + 1] = best[n] end
   return { levelTrail = 2, bencepoExport = 1, char = char,
     quests = { date = s.date, log = log, completed = A(s.completedQuests) },
     recipes = { date = s.date, known = known, inRange = open },
-    spells = { date = s.date, spells = spells },
-    equipped = equipped }
+    spells = { date = s.date, spells = spellList },
+    equipped = equippedOut }
 end
 
 local exportFrame
 local function showExport(text, summary)
   if not exportFrame then
-    local f = CreateFrame("Frame", "LevelTrailFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-    f:SetSize(560, 360)
-    f:SetPoint("CENTER")
-    f:SetFrameStrata("DIALOG")
-    f:SetMovable(true)
-    f:EnableMouse(true)
-    f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
-    if f.SetBackdrop then
-      f:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
+    local win = CreateFrame("Frame", "LevelTrailFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    win:SetSize(560, 360)
+    win:SetPoint("CENTER")
+    win:SetFrameStrata("DIALOG")
+    win:SetMovable(true)
+    win:EnableMouse(true)
+    win:RegisterForDrag("LeftButton")
+    win:SetScript("OnDragStart", win.StartMoving)
+    win:SetScript("OnDragStop", win.StopMovingOrSizing)
+    if win.SetBackdrop then
+      win:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 16,
         insets = { left = 4, right = 4, top = 4, bottom = 4 } })
     end
-    f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    f.title:SetPoint("TOPLEFT", 14, -12)
-    f.title:SetText(TITLE)
-    f.info = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    f.info:SetPoint("TOPLEFT", 14, -30)
-    f.info:SetPoint("RIGHT", -40, 0)
-    f.info:SetJustifyH("LEFT")
-    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    win.title = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    win.title:SetPoint("TOPLEFT", 14, -12)
+    win.title:SetText(TITLE)
+    win.info = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    win.info:SetPoint("TOPLEFT", 14, -30)
+    win.info:SetPoint("RIGHT", -40, 0)
+    win.info:SetJustifyH("LEFT")
+    local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -2, -2)
-    local scroll = CreateFrame("ScrollFrame", "LevelTrailScroll", f, "UIPanelScrollFrameTemplate")
+    local scroll = CreateFrame("ScrollFrame", "LevelTrailScroll", win, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 14, -64)
     scroll:SetPoint("BOTTOMRIGHT", -34, 14)
     local edit = CreateFrame("EditBox", nil, scroll)
@@ -1003,15 +1003,15 @@ local function showExport(text, summary)
     edit:SetFontObject(ChatFontNormal)
     edit:SetWidth(500)
     edit:SetMaxLetters(0)
-    edit:SetScript("OnEscapePressed", function() f:Hide() end)
+    edit:SetScript("OnEscapePressed", function() win:Hide() end)
     -- keep the text unchanged and selected so Ctrl+C always copies everything
     edit:SetScript("OnTextChanged", function(self, user)
-      if user and f.text then self:SetText(f.text) self:HighlightText() end
+      if user and win.text then self:SetText(win.text) self:HighlightText() end
     end)
     edit:SetScript("OnMouseUp", function(self) self:HighlightText() end)
     scroll:SetScrollChild(edit)
-    f.edit = edit
-    exportFrame = f
+    win.edit = edit
+    exportFrame = win
   end
   exportFrame.text = text
   exportFrame.info:SetText((summary or "") .. "\nPress Ctrl+C, then paste it at bencepo.github.io/leveltrail. Esc closes.")
