@@ -1340,6 +1340,22 @@ local function MinimapButton(name, icon, db, onClick, onTooltip)
   return b
 end
 
+-- Minimap icon through LibDataBroker and LibDBIcon (shipped in Libs), so minimap button
+-- managers can collect it. The own button above is only used if the libraries are missing.
+local function MinimapIcon(name, icon, db, onClick, onTooltip)
+  local ldb = LibStub and LibStub("LibDataBroker-1.1", true)
+  local dbi = LibStub and LibStub("LibDBIcon-1.0", true)
+  if not (ldb and dbi) then return MinimapButton(name .. "MinimapButton", icon, db, onClick, onTooltip) end
+  if db.minimapPos == nil and db.angle then db.minimapPos = db.angle % 360 end
+  local obj = ldb:GetDataObjectByName(name) or ldb:NewDataObject(name, {
+    type = "launcher", label = name, icon = icon,
+    OnClick = function(_, button) onClick(button) end,
+    OnTooltipShow = function(tip) onTooltip(tip) end,
+  })
+  if not dbi:IsRegistered(name) then dbi:Register(name, obj, db) end
+  return { SetShown = function(_, show) if show then dbi:Show(name) else dbi:Hide(name) end end }
+end
+
 local minimapButton
 
 local function minimapClick(button)
@@ -1371,9 +1387,9 @@ end
 local minimapEvents = CreateFrame("Frame")
 minimapEvents:RegisterEvent("PLAYER_LOGIN")
 minimapEvents:SetScript("OnEvent", function()
-  local ok, b = pcall(MinimapButton, "LevelTrailMinimapButton", "Interface\\Icons\\INV_Misc_Map_01",
+  local ok, b = pcall(MinimapIcon, "LevelTrail", "Interface\\Icons\\INV_Misc_Map_01",
     minimapSettings(), minimapClick, minimapTooltip)
-  if ok then minimapButton = b end
+  if ok then minimapButton = b else print("|cffff5555LevelTrail: minimap button failed:|r " .. tostring(b)) end
 end)
 
 -- Entry in the game's addon menu (the compartment next to the minimap), if the client has one.

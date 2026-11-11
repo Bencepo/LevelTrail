@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Minimap button: left-click opens the export for the web page, right-click turns the tracker window on or off, drag to move. `/trail minimap` hides or shows it. LevelTrail also appears in the game's addon menu next to the minimap.
+- Minimap button (LibDBIcon, so minimap button collectors can take it): left-click opens the export for the web page, right-click turns the tracker window on or off, drag to move. `/trail minimap` hides or shows it. LevelTrail also appears in the game's addon menu next to the minimap.
 
 ## 1.1.0-beta
 

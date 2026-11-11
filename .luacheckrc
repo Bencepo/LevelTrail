@@ -16,4 +16,4 @@ globals = {
 	"LevelTrail_OnCompartmentClick",
 }
 
-exclude_files = { "legacy/**", ".release/**" }
+exclude_files = { "legacy/**", ".release/**", "Libs/**" }
