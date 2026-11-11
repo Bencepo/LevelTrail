@@ -13,6 +13,7 @@ globals = {
 	"SLASH_LEVELTRAIL2",
 	"SLASH_LEVELTRAIL3",
 	"SlashCmdList",
+	"LevelTrail_OnCompartmentClick",
 }
 
 exclude_files = { "legacy/**", ".release/**" }

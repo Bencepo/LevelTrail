@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Minimap button: left-click opens the export for the web page, right-click turns the tracker window on or off, drag to move. `/trail minimap` hides or shows it. LevelTrail also appears in the game's addon menu next to the minimap.
+
 ## 1.1.0-beta
 
 - Tracker window (`/trail hud`): level progress, time on the level, session and average XP per hour, time to the next level and to 60. Movable, remembers position and visibility per character.

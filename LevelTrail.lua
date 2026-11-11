@@ -1285,6 +1285,102 @@ hudEvents:SetScript("OnEvent", function()
   if st and st.shown then pcall(hudShow, true) end
 end)
 
+---------------------------------------------------------------- minimap button
+-- A round button at the edge of the minimap. Drag it to move it; the angle is kept in
+-- the saved table db (db.angle, db.hide). No libraries needed.
+local function MinimapButton(name, icon, db, onClick, onTooltip)
+  if not Minimap then return nil end
+  local b = CreateFrame("Button", name, Minimap)
+  b:SetSize(31, 31)
+  b:SetFrameStrata("MEDIUM")
+  b:SetFrameLevel(8)
+  b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  b:RegisterForDrag("LeftButton")
+  b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+  local bg = b:CreateTexture(nil, "BACKGROUND")
+  bg:SetSize(20, 20)
+  bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+  bg:SetPoint("TOPLEFT", 7, -5)
+  local art = b:CreateTexture(nil, "ARTWORK")
+  art:SetSize(17, 17)
+  art:SetTexture(icon)
+  art:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+  art:SetPoint("TOPLEFT", 7, -6)
+  local border = b:CreateTexture(nil, "OVERLAY")
+  border:SetSize(53, 53)
+  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+  border:SetPoint("TOPLEFT")
+  local function place()
+    local a = math.rad(db.angle or 225)
+    local r = (Minimap:GetWidth() / 2) + 10
+    b:ClearAllPoints()
+    b:SetPoint("CENTER", Minimap, "CENTER", math.cos(a) * r, math.sin(a) * r)
+  end
+  b:SetScript("OnDragStart", function(self)
+    self:SetScript("OnUpdate", function()
+      local mx, my = Minimap:GetCenter()
+      local cx, cy = GetCursorPosition()
+      local scale = Minimap:GetEffectiveScale()
+      db.angle = math.deg(math.atan2(cy / scale - my, cx / scale - mx))
+      place()
+    end)
+  end)
+  b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+  b:SetScript("OnClick", function(_, button) onClick(button) end)
+  b:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+    onTooltip(GameTooltip)
+    GameTooltip:Show()
+  end)
+  b:SetScript("OnLeave", function(self)
+    if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
+  end)
+  place()
+  b:SetShown(not db.hide)
+  return b
+end
+
+local minimapButton
+
+local function minimapClick(button)
+  if button == "RightButton" then
+    local okH, errH = pcall(hudShow, not (hud and hud:IsShown()))
+    if not okH then print("|cffff5555LevelTrail: tracker failed:|r " .. tostring(errH)) end
+  else
+    SlashCmdList["LEVELTRAIL"]("")
+  end
+end
+
+local function minimapTooltip(tip)
+  tip:AddLine(TITLE)
+  local ok, text = pcall(hudLines)
+  if ok and text then
+    for line in text:gmatch("[^\n]+") do tip:AddLine(line, 1, 1, 1) end
+  end
+  tip:AddLine(" ")
+  tip:AddLine("Left-click: export for bencepo.github.io/leveltrail", 0.6, 0.8, 1)
+  tip:AddLine("Right-click: tracker window on/off", 0.6, 0.8, 1)
+  tip:AddLine("Drag: move. /trail minimap: hide or show", 0.6, 0.8, 1)
+end
+
+local function minimapSettings()
+  LevelTrailDB._minimap = LevelTrailDB._minimap or {}
+  return LevelTrailDB._minimap
+end
+
+local minimapEvents = CreateFrame("Frame")
+minimapEvents:RegisterEvent("PLAYER_LOGIN")
+minimapEvents:SetScript("OnEvent", function()
+  local ok, b = pcall(MinimapButton, "LevelTrailMinimapButton", "Interface\\Icons\\INV_Misc_Map_01",
+    minimapSettings(), minimapClick, minimapTooltip)
+  if ok then minimapButton = b end
+end)
+
+-- Entry in the game's addon menu (the compartment next to the minimap), if the client has one.
+function LevelTrail_OnCompartmentClick(_, button)
+  minimapClick(button)
+end
+
 ---------------------------------------------------------------- slash command
 local function count(t)
   local n = 0
@@ -1313,8 +1409,14 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
     local okH, errH = pcall(hudShow, on)
     if not okH then print("|cffff5555LevelTrail: tracker failed:|r " .. tostring(errH)) end
     return
+  elseif msg == "minimap" then
+    local st = minimapSettings()
+    st.hide = not st.hide
+    if minimapButton then minimapButton:SetShown(not st.hide) end
+    print("|cff7fbf3f" .. TITLE .. "|r minimap button " .. (st.hide and "hidden" or "shown"))
+    return
   elseif msg == "help" then
-    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail hud: tracker window on/off")
+    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail hud: tracker window on/off, /trail minimap: minimap button on/off")
     return
   end
   local okP, p = pcall(pace, s)
