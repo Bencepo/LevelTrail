@@ -126,6 +126,73 @@ local function addXP(level, field, amount)
   b[field] = (b[field] or 0) + amount
 end
 
+---------------------------------------------------------------- library books (WoW Forever)
+-- Every library book is handed in with a quest of its own (same IDs for both factions),
+-- so the count is simply the number of these quests the character has completed.
+-- Quest IDs from Questie's Forever data (QuestieDB, foreverQuestFixes.lua).
+local BOOK_QUESTS = {
+  { 78124, "Nar'thalas Almanac, Vol. 74" },
+  { 78127, "The Dalaran Digest, Vol. 23" },
+  { 78142, "Bewitchments and Glamours" },
+  { 78143, "Secrets of the Dreamers" },
+  { 78145, "Arcanic Systems Manual" },
+  { 78146, "Goaz Scrolls" },
+  { 78147, "Crimes Against Anatomy" },
+  { 78148, "Runes of the Sorcerer-Kings" },
+  { 78149, "Fury of the Land" },
+  { 79091, "Archmage Antonidas: The Unabridged Autobiography" },
+  { 79092, "Archmage Theocritus' Research Journal" },
+  { 79093, "Rumi of Gnomeregan: The Collected Works" },
+  { 79094, "The Lessons of Ta'zo" },
+  { 79095, "The Apothecary's Metaphysical Primer" },
+  { 79096, "Ataeric: On Arcane Curiosities" },
+  { 79097, "Baxtan: On Destructive Magics" },
+  { 79535, "Basilisks: Should Petrification be Feared?" },
+  { 79947, "Geomancy: The Stone-Cold Truth" },
+  { 79948, "Defensive Magics 101" },
+  { 79949, "A Web of Lies: Debunking Myths and Legends" },
+  { 79950, "Demons and You" },
+  { 79951, "Mummies: A Guide to the Unsavory Undead" },
+  { 79952, "RwlRwlRwlRwl!" },
+  { 79953, "A Ludite's Guide to Caring for Your Demonic Pet" },
+  { 81947, "Sanguine Sorcery" },
+  { 81949, "Legends of the Tidesages" },
+  { 81951, "The Liminal and the Arcane" },
+  { 81952, "Everyday Etiquette" },
+  { 81953, "Stonewrought Design" },
+  { 81954, "Venomous Journeys" },
+  { 81955, "A Mind of Metal" },
+  { 81956, "Conjurer's Codex" },
+  { 84395, "Undead Potatoes" },
+  { 84396, "Magma or Lava?" },
+  { 84397, "Northern Kalimdor - A Comprehensive Guide" },
+  { 84398, "A Study of the Light" },
+  { 84399, "Ka-Boom!" },
+  { 84400, "The Knight and the Lady" },
+  { 84401, "Scourge: Undead Menace or Misunderstood?" },
+  { 84402, "Necromancy 101" },
+}
+local BOOK_REWARDS = { friend = 78150, greater20 = 79536, greater25 = 82208 }
+local BOOK_IDS = {}
+for _, b in ipairs(BOOK_QUESTS) do BOOK_IDS[b[1]] = b[2] end
+
+local function questDone(id)
+  if C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then return try(C_QuestLog.IsQuestFlaggedCompleted, id) and true or false end
+  if IsQuestFlaggedCompleted then return try(IsQuestFlaggedCompleted, id) and true or false end
+  return false
+end
+
+local function libraryBooks()
+  local done, missing = {}, {}
+  for _, b in ipairs(BOOK_QUESTS) do
+    local list = questDone(b[1]) and done or missing
+    list[#list + 1] = { quest = b[1], title = b[2] }
+  end
+  local rewards = {}
+  for k, id in pairs(BOOK_REWARDS) do rewards[k] = questDone(id) end
+  return { count = #done, total = #BOOK_QUESTS, done = done, missing = missing, rewards = rewards }
+end
+
 ---------------------------------------------------------------- deaths, gold and repairs
 local function onDeath()
   local s = store()
@@ -658,6 +725,7 @@ local function snapshot()
   s.completedQuests = completedQuests()
   s.talents = talents()
   s.reputation = reputation()
+  s.libraryBooks = libraryBooks()
   s.sheet = sheet()
   s.spells = spells()
   s.api = apiInfo()
@@ -701,8 +769,18 @@ f:SetScript("OnEvent", function(_, event, ...)
     pcall(onLevelUp, ...)
     scheduleSnapshot()
   elseif event == "QUEST_TURNED_IN" then
-    local _, xpReward = ...
+    local questID, xpReward = ...
     pcall(addXP, UnitLevel("player"), "quest", xpReward)
+    if BOOK_IDS[questID] then
+      -- the completed flag can lag behind the event a moment
+      local function report()
+        local ok, lb = pcall(libraryBooks)
+        if ok and lb then
+          print(("|cff7fbf3fLevelTrail:|r library book %d of %d handed in (%s)."):format(lb.count, lb.total, BOOK_IDS[questID]))
+        end
+      end
+      if C_Timer and C_Timer.After then C_Timer.After(1, report) else report() end
+    end
     scheduleSnapshot()
   elseif event == "CHAT_MSG_COMBAT_XP_GAIN" then
     local n = numberIn(..., KILL_PATTERN)
@@ -850,7 +928,7 @@ local function buildExport(s)
     addonVersion = s.version, level = s.level, xp = s.xp, xpMax = s.xpMax,
     online = s.online, splits = splits, levelSince = s.levelSince, xpSources = s.xpSources,
     deaths = deaths, deathCount = s.deathCount or #allDeaths, goldDays = goldDays, repairs = s.repairs,
-    sessionMonths = months,
+    sessionMonths = months, libraryBooks = s.libraryBooks,
     rested = s.rested, copper = s.copper, zone = s.zone, subzone = s.subzone, hearth = s.hearth,
     bags = A({ s.bags[1] or 0, s.bags[2] or 0, s.bags[3] or 0, s.bags[4] or 0 }), backpack = s.bags.backpack,
     reagentBag = s.reagentBag, freeSlots = s.freeSlots, professions = s.professions, reputation = rep, sheets = sheets,
@@ -961,7 +1039,9 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
   local g = math.floor(s.copper / 10000)
   local sv = math.floor((s.copper % 10000) / 100)
   local tal = #s.talents.list
-  local summary = "Level " .. tostring(s.level) .. ", " .. g .. "g " .. sv .. "s, " .. tostring(s.zone) .. " | " ..
+  local lb = s.libraryBooks
+  local summary = "Level " .. tostring(s.level) .. ", " .. g .. "g " .. sv .. "s, " .. tostring(s.zone) ..
+    (lb and (", library books " .. lb.count .. "/" .. lb.total) or "") .. " | " ..
     count(s.equipped) .. " items, " .. tal .. " talents, " .. #s.questLog .. " quests, " .. count(s.recipes) .. " professions with recipes"
   if msg == "chat" then
     print("|cff7fbf3f" .. TITLE .. "|r " .. summary)

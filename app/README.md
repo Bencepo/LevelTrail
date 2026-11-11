@@ -11,5 +11,6 @@ What they change:
 - Character tab: level splits, XP sources, deaths, gold per day and repairs, other characters
 - The "Refresh from game" button and the scheduled-sync code are removed
 - Texts point to `/trail` instead of `/bexport`
+- The import sets the library book count (Progress, Books) from the export
 
 The JavaScript was checked with `node --check` after applying the edits.
