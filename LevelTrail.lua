@@ -637,6 +637,21 @@ local function apiInfo()
   return t
 end
 
+---------------------------------------------------------------- VendorFloor (optional)
+-- If Bencepo's VendorFloor is installed, its ledger (account-wide) is read through
+-- VendorFloor_Ledger(). Without it nothing changes.
+local function vendorFloorLedger()
+  if type(VendorFloor_Ledger) ~= "function" then return nil end
+  local ok, l = pcall(VendorFloor_Ledger)
+  if ok and type(l) == "table" then return l end
+  return nil
+end
+
+local function flipProfit()
+  local l = vendorFloorLedger()
+  return l and tonumber(l.profit) or nil
+end
+
 ---------------------------------------------------------------- sessions (xp and gold per play session)
 -- The current session lives in the saved data so a /reload continues it.
 local function sessionGet()
@@ -646,7 +661,8 @@ local function sessionGet()
   local cur = s.session
   if not cur or (time() - (cur.last or 0)) > 900 then
     cur = { start = time(), date = date("%Y-%m-%d %H:%M"), level = UnitLevel("player"),
-      copper = GetMoney() or 0, xpGained = 0, lastXP = UnitXP("player") or 0, lastMax = xpMax, lastLevel = UnitLevel("player") }
+      copper = GetMoney() or 0, xpGained = 0, lastXP = UnitXP("player") or 0, lastMax = xpMax, lastLevel = UnitLevel("player"),
+      flip = flipProfit() }
     s.session = cur
   end
   return cur
@@ -675,6 +691,11 @@ local function sessionSave()
   local rec = { date = cur.date, minutes = math.floor((time() - cur.start) / 60),
     levelStart = cur.level, levelEnd = UnitLevel("player"),
     xpGained = cur.xpGained, copperDelta = (GetMoney() or 0) - cur.copper }
+  local flip = flipProfit()
+  if flip then
+    if not cur.flip then cur.flip = flip end
+    rec.flipProfit = flip - cur.flip
+  end
   local list = s.sessions
   if list[#list] and list[#list].date == rec.date then list[#list] = rec else list[#list + 1] = rec end
   -- older sessions are summed up per month instead of being dropped
@@ -839,6 +860,7 @@ local function snapshot()
   s.talents = talents()
   s.reputation = reputation()
   s.libraryBooks = libraryBooks()
+  s.vendorFloor = vendorFloorLedger()
   s.sheet = sheet()
   s.spells = spells()
   s.api = apiInfo()
@@ -1001,6 +1023,20 @@ end
 
 local FORM = { [0] = "Caster", [1] = "Bear", [2] = "Aquatic", [3] = "Cat", [4] = "Travel" }
 
+-- VendorFloor ledger for the export: totals and an array of days, oldest first.
+local function vfOut(l)
+  if type(l) ~= "table" then return nil end
+  local days, keys = A(), {}
+  for k in pairs(l.days or {}) do keys[#keys + 1] = k end
+  table.sort(keys)
+  for _, k in ipairs(keys) do
+    local d = l.days[k]
+    days[#days + 1] = { d = k, spent = d.spent, sold = d.sold, profit = math.floor((d.sold or 0) - (d.soldCost or 0)) }
+  end
+  return { buys = l.buys, spent = l.spent, sold = l.sold, profit = l.profit,
+    unsoldUnits = l.unsoldUnits, unsoldValue = l.unsoldValue, days = days }
+end
+
 -- Same document shapes the app database uses, so the app can import the text directly.
 local function buildExport(s)
   local sheets = {}
@@ -1050,7 +1086,7 @@ local function buildExport(s)
     addonVersion = s.version, level = s.level, xp = s.xp, xpMax = s.xpMax,
     online = s.online, splits = splits, levelSince = s.levelSince, xpSources = s.xpSources,
     deaths = deaths, deathCount = s.deathCount or #allDeaths, goldDays = goldDays, repairs = s.repairs,
-    sessionMonths = months, libraryBooks = s.libraryBooks, zones = zones, pace = pace(s),
+    sessionMonths = months, libraryBooks = s.libraryBooks, zones = zones, pace = pace(s), vendorFloor = vfOut(s.vendorFloor),
     rested = s.rested, copper = s.copper, zone = s.zone, subzone = s.subzone, hearth = s.hearth,
     bags = A({ s.bags[1] or 0, s.bags[2] or 0, s.bags[3] or 0, s.bags[4] or 0 }), backpack = s.bags.backpack,
     reagentBag = s.reagentBag, freeSlots = s.freeSlots, professions = s.professions, reputation = rep, sheets = sheets,
