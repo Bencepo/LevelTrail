@@ -12,7 +12,8 @@
 -- Nothing here sends input to the game; it only reads.
 LevelTrailDB = LevelTrailDB or {}
 
-local ADDON = ...
+local ADDON, ns = ...
+ns = ns or {}
 local VERSION = 8 -- data version
 local GetMetadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 local ADDON_VERSION = GetMetadata and GetMetadata(ADDON, "Version") or ""
@@ -1638,3 +1639,9 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
     print("|cff7fbf3f" .. TITLE .. "|r " .. summary .. " (type /reload to write the file instead)")
   end
 end
+
+-- For the automated tests (tests/*_spec.lua, run with busted outside the game); unused in the game.
+ns.test = {
+  toPattern = toPattern, numberIn = numberIn, lootValue = lootValue, xpForLevel = xpForLevel,
+  pace = pace, hm = hm, thousands = thousands,
+}
