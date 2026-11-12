@@ -45,6 +45,10 @@ See [ROADMAP.md](ROADMAP.md).
 - Online time is counted by the addon from its install on. A level the addon did not see from the start is marked as partial.
 - Nothing is sent anywhere: an addon can only write its SavedVariables file and show text.
 
+## AI disclosure
+
+The code was written with the help of an AI assistant (Claude). Bencepo designed the features, tests everything in game and maintains the addon.
+
 ## License
 
 Copyright (c) 2026 Bencepo. All rights reserved. See [LICENSE](LICENSE).
