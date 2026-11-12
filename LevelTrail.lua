@@ -1549,7 +1549,7 @@ end
 local minimapEvents = CreateFrame("Frame")
 minimapEvents:RegisterEvent("PLAYER_LOGIN")
 minimapEvents:SetScript("OnEvent", function()
-  local ok, b = pcall(MinimapIcon, "LevelTrail", "Interface\\Icons\\INV_Misc_Map_01",
+  local ok, b = pcall(MinimapIcon, "LevelTrail", "Interface\\AddOns\\LevelTrail\\Icons\\minimap",
     minimapSettings(), minimapClick, minimapTooltip)
   if ok then minimapButton = b else print("|cffff5555LevelTrail: minimap button failed:|r " .. tostring(b)) end
 end)
