@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1-beta
+
+- Removed everything left from the former name BencepoExport: the data takeover, the `/bx` command, the optional dependency and the `legacy/` and `migration/` folders. Use `/trail` or `/lt`.
+- Exports no longer carry the `bencepoExport` marker; the web viewer only reads LevelTrail exports.
+
 ## 1.3.0-beta
 
 - Best zone per level: online time and XP per zone and level (`char.zoneLevels`).

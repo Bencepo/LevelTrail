@@ -9,8 +9,6 @@ ignore:
   - tests
   - .busted
   - app
-  - legacy
-  - migration
 
 manual-changelog:
   filename: CHANGELOG.md

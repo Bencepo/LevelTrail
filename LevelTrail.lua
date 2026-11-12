@@ -39,18 +39,6 @@ local function store()
   return LevelTrailDB[key]
 end
 
--- Data from the addon's former name (BencepoExport) is taken over once, as long as
--- LevelTrail has none of its own yet. The old folder only has to stay installed
--- for one login.
-local function migrate()
-  if type(BencepoExportDB) ~= "table" or next(LevelTrailDB) ~= nil then return end
-  local n = 0
-  for key, data in pairs(BencepoExportDB) do
-    if type(data) == "table" then LevelTrailDB[key] = data; n = n + 1 end
-  end
-  if n > 0 then print("|cff7fbf3fLevelTrail:|r took over the data of " .. n .. " character(s) from BencepoExport.") end
-end
-
 ---------------------------------------------------------------- online clock and level splits
 -- Online time is counted by the addon itself (once a minute while logged in), so it
 -- starts at the install. A level the addon did not see from its start is "partial".
@@ -1016,7 +1004,7 @@ end
 
 ---------------------------------------------------------------- events
 local f = CreateFrame("Frame")
-local EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_ENTERING_WORLD", "PLAYER_MONEY",
+local EVENTS = { "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_ENTERING_WORLD", "PLAYER_MONEY",
   "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "SKILL_LINES_CHANGED", "ZONE_CHANGED_NEW_AREA", "PLAYER_LEVEL_UP",
   "PLAYER_XP_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "CHARACTER_POINTS_CHANGED", "BANKFRAME_OPENED",
   "PLAYERBANKSLOTS_CHANGED", "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "PLAYER_DEAD",
@@ -1027,9 +1015,7 @@ for _, ev in ipairs(EVENTS) do pcall(f.RegisterEvent, f, ev) end
 local bankOpen = false
 f:RegisterEvent("BANKFRAME_CLOSED")
 f:SetScript("OnEvent", function(_, event, ...)
-  if event == "ADDON_LOADED" then
-    if ... == ADDON then pcall(migrate) end
-  elseif event == "PLAYER_LOGIN" then
+  if event == "PLAYER_LOGIN" then
     pcall(snapshot)
     clockZone = currentZone()
     if C_Timer and C_Timer.NewTicker then C_Timer.NewTicker(60, function() pcall(clockTick) end) end
@@ -1295,7 +1281,7 @@ local function buildExport(s)
   end
   local spellList = A()
   for _, n in ipairs(order) do spellList[#spellList + 1] = best[n] end
-  return { levelTrail = 4, bencepoExport = 1, char = char,
+  return { levelTrail = 4, char = char,
     quests = { date = s.date, log = log, completed = A(s.completedQuests) },
     recipes = { date = s.date, known = known, inRange = open },
     spells = { date = s.date, spells = spellList },
@@ -1582,7 +1568,6 @@ end
 
 SLASH_LEVELTRAIL1 = "/trail"
 SLASH_LEVELTRAIL2 = "/lt"
-SLASH_LEVELTRAIL3 = "/bx"
 SlashCmdList["LEVELTRAIL"] = function(msg)
   -- refresh the parts that only load with their window open
   pcall(scanRecipes)

@@ -11,9 +11,8 @@ globals = {
 	"LevelTrailDB",
 	"SLASH_LEVELTRAIL1",
 	"SLASH_LEVELTRAIL2",
-	"SLASH_LEVELTRAIL3",
 	"SlashCmdList",
 	"LevelTrail_OnCompartmentClick",
 }
 
-exclude_files = { "legacy/**", ".release/**", "Libs/**" }
+exclude_files = { ".release/**", "Libs/**" }

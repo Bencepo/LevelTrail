@@ -172,7 +172,7 @@ function parseExport(text) {
   if (start < 0 || end < start) throw new Error("That does not look like a LevelTrail export. In game type /trail and press Ctrl+C in the window.");
   let d;
   try { d = JSON.parse(text.slice(start, end + 1)); } catch (e) { throw new Error("The text is incomplete or changed. Copy it again with Ctrl+C in the /trail window."); }
-  if (!d || !(d.levelTrail || d.bencepoExport) || !d.char || d.char.level == null) throw new Error("That is not a LevelTrail export.");
+  if (!d || !d.levelTrail || !d.char || d.char.level == null) throw new Error("That is not a LevelTrail export.");
   return d;
 }
 function charId(c) { return `${c.name || "Unknown"}-${c.realm || ""}`; }
