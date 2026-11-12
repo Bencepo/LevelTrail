@@ -1,8 +1,0 @@
-## Interface: 16001
-## Title: BencepoExport (old data for LevelTrail)
-## Notes: Only keeps the old BencepoExport data loaded so LevelTrail can take it over. Can be deleted after one login with LevelTrail.
-## Author: Bencepo
-## Version: 4.0-migration
-## SavedVariables: BencepoExportDB
-
-BencepoExport.lua

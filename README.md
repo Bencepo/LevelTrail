@@ -32,10 +32,6 @@ The game also writes everything to `WTF\Account\<ACCOUNT>\SavedVariables\LevelTr
 
 `/trail hud` turns a small window on or off: level progress, time on the current level, XP per hour (session and recent levels) and the time to the next level and to 60. Drag it anywhere; position and visibility are kept per character. `/trail help` lists all commands.
 
-## Former name
-
-LevelTrail was called BencepoExport. On the first login it takes over the old data, as long as the `BencepoExport` folder is still installed (the stub in `migration/` is enough). After that the old folder can be deleted.
-
 ## Web viewer
 
 The page lives in `web/index.html` and is published from the public repo `Bencepo/bencepo.github.io` (folder `leveltrail/`). After changing it, copy the file there and push.
