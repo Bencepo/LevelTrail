@@ -6,6 +6,8 @@ ignore:
   - "*.md"
   - .luacheckrc
   - web
+  - tests
+  - .busted
   - app
   - legacy
   - migration
