@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.3-beta
+
+- Less work while farming: the character snapshot (bags, quests, talents, reputation, spells) is rebuilt at most once a minute instead of after every loot or money change; right away on level-up, zone change, export and logout.
+- Removed fallbacks for old clients and the spare minimap button that was only used without LibDBIcon.
+- Code check with LuaLS and the WoW API annotations runs with every change.
+
 ## 1.3.2-beta
 
 - Now also on Wago Addons.
