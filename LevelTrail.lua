@@ -15,7 +15,16 @@ LevelTrailDB = LevelTrailDB or {}
 local ADDON, ns = ...
 ns = ns or {}
 local VERSION = 8 -- data version
-local GetMetadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+local GetMetadata = C_AddOns.GetAddOnMetadata
+
+-- Item and money functions live in C_Item / C_CurrencyInfo on current clients. The old
+-- globals are only fallbacks for clients without them and are read in this one place.
+---@diagnostic disable: deprecated
+local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+local GetItemInfoInstant = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
+local GetDetailedItemLevelInfo = (C_Item and C_Item.GetDetailedItemLevelInfo) or GetDetailedItemLevelInfo
+local GetCoinTextureString = (C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString) or GetCoinTextureString
+---@diagnostic enable: deprecated
 local ADDON_VERSION = GetMetadata and GetMetadata(ADDON, "Version") or ""
 if ADDON_VERSION == "" or ADDON_VERSION:find("^@") then ADDON_VERSION = "dev" end
 local TITLE = "LevelTrail " .. ADDON_VERSION
@@ -377,20 +386,11 @@ end
 
 ---------------------------------------------------------------- items
 local function itemName(link)
-  if C_Item and C_Item.GetItemInfo then
-    local n = try(C_Item.GetItemInfo, link)
-    if n then return n end
-  end
   return (try(GetItemInfo, link))
 end
 
 local function itemEquipLoc(link)
-  local r
-  if C_Item and C_Item.GetItemInfoInstant then
-    r = { pcall(C_Item.GetItemInfoInstant, link) }
-  elseif GetItemInfoInstant then
-    r = { pcall(GetItemInfoInstant, link) }
-  end
+  local r = GetItemInfoInstant and { pcall(GetItemInfoInstant, link) }
   -- returns ok, itemID, itemType, itemSubType, itemEquipLoc, icon, classID, subclassID
   if r and r[1] then return r[5], r[2] end
   return nil
@@ -407,10 +407,6 @@ local function itemStats(link)
 end
 
 local function itemLevel(link)
-  if C_Item and C_Item.GetDetailedItemLevelInfo then
-    local l = try(C_Item.GetDetailedItemLevelInfo, link)
-    if l then return l end
-  end
   return (try(GetDetailedItemLevelInfo, link))
 end
 
@@ -446,10 +442,7 @@ end
 
 ---------------------------------------------------------------- containers
 local function numSlots(bag)
-  if C_Container and C_Container.GetContainerNumSlots then
-    return try(C_Container.GetContainerNumSlots, bag) or 0
-  end
-  return try(GetContainerNumSlots, bag) or 0
+  return try(C_Container.GetContainerNumSlots, bag) or 0
 end
 
 local function slotItem(bag, slot)
@@ -465,10 +458,7 @@ local function slotItem(bag, slot)
 end
 
 local function freeSlots(bag)
-  if C_Container and C_Container.GetContainerNumFreeSlots then
-    return try(C_Container.GetContainerNumFreeSlots, bag) or 0
-  end
-  return try(GetContainerNumFreeSlots, bag) or 0
+  return try(C_Container.GetContainerNumFreeSlots, bag) or 0
 end
 
 -- returns sizes per bag, item counts by id, and equippable gear found
@@ -993,13 +983,26 @@ local function snapshot()
   return s
 end
 
--- Many events can fire at once (looting, selling): one snapshot two seconds after the last.
-local snapPending = false
+-- A snapshot scans bags, gear, quests, talents, reputation and the spellbook. Frequent
+-- events (looting, selling, money, XP) only mark it as stale; it is then rebuilt at most
+-- once a minute by the clock ticker, and always at logout and when the export opens.
+-- Level-ups and zone changes rebuild it two seconds later (one run for a burst of events).
+local snapDirty, snapPending = false, false
 local function scheduleSnapshot()
+  snapDirty = true
+end
+local function flushSnapshot()
+  if not snapDirty then return end
+  snapDirty = false
+  pcall(snapshot)
+end
+local function snapshotSoon()
   if snapPending then return end
   snapPending = true
-  local function run() snapPending = false; pcall(snapshot) end
-  if C_Timer and C_Timer.After then C_Timer.After(2, run) else run() end
+  C_Timer.After(2, function()
+    snapPending, snapDirty = false, false
+    pcall(snapshot)
+  end)
 end
 
 ---------------------------------------------------------------- events
@@ -1018,13 +1021,17 @@ f:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     pcall(snapshot)
     clockZone = currentZone()
-    if C_Timer and C_Timer.NewTicker then C_Timer.NewTicker(60, function() pcall(clockTick) end) end
+    C_Timer.NewTicker(60, function()
+      pcall(clockTick)
+      flushSnapshot()
+    end)
   elseif event == "PLAYER_LOGOUT" then
+    flushSnapshot()
     pcall(clockTick)
     pcall(flightCheck)
   elseif event == "PLAYER_LEVEL_UP" then
     pcall(onLevelUp, ...)
-    scheduleSnapshot()
+    snapshotSoon()
   elseif event == "QUEST_TURNED_IN" then
     local questID, xpReward = ...
     pcall(addXP, UnitLevel("player"), "quest", xpReward)
@@ -1068,11 +1075,11 @@ f:SetScript("OnEvent", function(_, event, ...)
   elseif event == "ZONE_CHANGED_NEW_AREA" then
     pcall(clockTick)
     pcall(dungeonCheck)
-    scheduleSnapshot()
+    snapshotSoon()
   elseif event == "PLAYER_ENTERING_WORLD" then
     pcall(dungeonCheck)
     pcall(flightCheck)
-    scheduleSnapshot()
+    snapshotSoon()
   elseif event == "MERCHANT_SHOW" then
     merchantOpen = true
     repairCost = try(GetRepairAllCost)
@@ -1448,66 +1455,12 @@ hudEvents:SetScript("OnEvent", function()
 end)
 
 ---------------------------------------------------------------- minimap button
--- A round button at the edge of the minimap. Drag it to move it; the angle is kept in
--- the saved table db (db.angle, db.hide). No libraries needed.
-local function MinimapButton(name, icon, db, onClick, onTooltip)
-  if not Minimap then return nil end
-  local b = CreateFrame("Button", name, Minimap)
-  b:SetSize(31, 31)
-  b:SetFrameStrata("MEDIUM")
-  b:SetFrameLevel(8)
-  b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-  b:RegisterForDrag("LeftButton")
-  b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-  local bg = b:CreateTexture(nil, "BACKGROUND")
-  bg:SetSize(20, 20)
-  bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-  bg:SetPoint("TOPLEFT", 7, -5)
-  local art = b:CreateTexture(nil, "ARTWORK")
-  art:SetSize(17, 17)
-  art:SetTexture(icon)
-  art:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-  art:SetPoint("TOPLEFT", 7, -6)
-  local border = b:CreateTexture(nil, "OVERLAY")
-  border:SetSize(53, 53)
-  border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-  border:SetPoint("TOPLEFT")
-  local function place()
-    local a = math.rad(db.angle or 225)
-    local r = (Minimap:GetWidth() / 2) + 10
-    b:ClearAllPoints()
-    b:SetPoint("CENTER", Minimap, "CENTER", math.cos(a) * r, math.sin(a) * r)
-  end
-  b:SetScript("OnDragStart", function(self)
-    self:SetScript("OnUpdate", function()
-      local mx, my = Minimap:GetCenter()
-      local cx, cy = GetCursorPosition()
-      local scale = Minimap:GetEffectiveScale()
-      db.angle = math.deg(math.atan2(cy / scale - my, cx / scale - mx))
-      place()
-    end)
-  end)
-  b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
-  b:SetScript("OnClick", function(_, button) onClick(button) end)
-  b:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-    onTooltip(GameTooltip)
-    GameTooltip:Show()
-  end)
-  b:SetScript("OnLeave", function(self)
-    if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
-  end)
-  place()
-  b:SetShown(not db.hide)
-  return b
-end
-
 -- Minimap icon through LibDataBroker and LibDBIcon (shipped in Libs), so minimap button
--- managers can collect it. The own button above is only used if the libraries are missing.
+-- managers can collect it.
 local function MinimapIcon(name, icon, db, onClick, onTooltip)
   local ldb = LibStub and LibStub("LibDataBroker-1.1", true)
   local dbi = LibStub and LibStub("LibDBIcon-1.0", true)
-  if not (ldb and dbi) then return MinimapButton(name .. "MinimapButton", icon, db, onClick, onTooltip) end
+  if not (ldb and dbi) then return nil end
   if db.minimapPos == nil and db.angle then db.minimapPos = db.angle % 360 end
   local obj = ldb:GetDataObjectByName(name) or ldb:NewDataObject(name, {
     type = "launcher", label = name, icon = icon,

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.1",
+  "workspace.ignoreDir": [
+    "Libs",
+    ".release",
+    "tests",
+    "web",
+    ".github"
+  ],
+  "diagnostics.globals": [
+    "COMBATLOG_XPGAIN_FIRSTPERSON",
+    "ERR_ZONE_EXPLORED_XP",
+    "GetFactionInfo",
+    "GetItemStats",
+    "GetNumFactions",
+    "GetNumSpellTabs",
+    "GetNumTalentTabs",
+    "GetNumTalents",
+    "GetSpellBookItemName",
+    "GetSpellInfo",
+    "GetSpellTabInfo",
+    "GetTalentTabInfo",
+    "IsQuestFlaggedCompleted",
+    "LOOT_ITEM_SELF",
+    "LOOT_ITEM_SELF_MULTIPLE",
+    "SlashCmdList",
+    "UnitCharacterPoints",
+    "VendorFloor_Ledger"
+  ]
+}
