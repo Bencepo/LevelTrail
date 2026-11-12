@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.2-beta
+
+- Now also on Wago Addons.
+- Automated tests (busted) for chat parsing, pace and formatting run with every change.
+
 ## 1.3.1-beta
 
 - Own minimap and addon list icon.
