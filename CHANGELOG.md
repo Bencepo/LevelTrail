@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.6-beta
+
+- Brighter icon that stays readable on the round minimap button.
+
 ## 1.3.5-beta
 
 - New icon: glowing footsteps climbing to a star, for the minimap button and the addon list.
