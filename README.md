@@ -45,6 +45,15 @@ See [ROADMAP.md](ROADMAP.md).
 - Online time is counted by the addon from its install on. A level the addon did not see from the start is marked as partial.
 - Nothing is sent anywhere: an addon can only write its SavedVariables file and show text.
 
+## More addons by Bencepo
+
+All addons, live demos and the web pages: **https://bencepo.github.io**
+
+- [VendorFloor](https://bencepo.github.io/vendorfloor/): auction house sniper for finds below vendor price, below disenchant value and profitable crafts.
+- [ProcFlare](https://bencepo.github.io/procflare/): big Clearcasting alert and small icons for weapon, trinket and talent procs, with melee and caster sound packs.
+- [SwingCast](https://bencepo.github.io/swingcast/): spell icon, cast time, latency zone and a swing timer on the standard cast bar.
+- [StatTrim](https://bencepo.github.io/stattrim/): hide, merge and reorder stats right inside the character window.
+
 ## AI disclosure
 
 The code was written with the help of an AI assistant (Claude). Bencepo designed the features, tests everything in game and maintains the addon.
