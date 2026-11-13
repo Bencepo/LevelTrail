@@ -1017,6 +1017,18 @@ for _, ev in ipairs(EVENTS) do pcall(f.RegisterEvent, f, ev) end
 
 local bankOpen = false
 f:RegisterEvent("BANKFRAME_CLOSED")
+
+-- Moving items in the bank and crafting fire these events many times in a row:
+-- one scan a second after the first of a burst.
+local soonPending = {}
+local function soon(fn)
+  if soonPending[fn] then return end
+  soonPending[fn] = true
+  C_Timer.After(1, function()
+    soonPending[fn] = nil
+    pcall(fn)
+  end)
+end
 f:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     pcall(snapshot)
@@ -1095,9 +1107,11 @@ f:SetScript("OnEvent", function(_, event, ...)
   elseif event == "BANKFRAME_CLOSED" then
     bankOpen = false
   elseif event == "PLAYERBANKSLOTS_CHANGED" then
-    if bankOpen then pcall(scanBank) end
-  elseif event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_LIST_UPDATE" then
+    if bankOpen then soon(scanBank) end
+  elseif event == "TRADE_SKILL_SHOW" then
     pcall(scanRecipes)
+  elseif event == "TRADE_SKILL_LIST_UPDATE" then
+    soon(scanRecipes)
   else
     scheduleSnapshot()
   end
@@ -1522,17 +1536,6 @@ end
 SLASH_LEVELTRAIL1 = "/trail"
 SLASH_LEVELTRAIL2 = "/lt"
 SlashCmdList["LEVELTRAIL"] = function(msg)
-  -- refresh the parts that only load with their window open
-  pcall(scanRecipes)
-  local ok, s = pcall(snapshot)
-  if not ok or not s then print("|cffff5555LevelTrail: snapshot failed:|r " .. tostring(s)) return end
-  local g = math.floor(s.copper / 10000)
-  local sv = math.floor((s.copper % 10000) / 100)
-  local tal = #s.talents.list
-  local lb = s.libraryBooks
-  local summary = "Level " .. tostring(s.level) .. ", " .. g .. "g " .. sv .. "s, " .. tostring(s.zone) ..
-    (lb and (", library books " .. lb.count .. "/" .. lb.total) or "") .. " | " ..
-    count(s.equipped) .. " items, " .. tal .. " talents, " .. #s.questLog .. " quests, " .. count(s.recipes) .. " professions with recipes"
   msg = (msg or ""):lower():match("^%s*(.-)%s*$")
   if msg == "hud" then
     local on = not (hud and hud:IsShown())
@@ -1557,6 +1560,17 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
     print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail session: this session so far, /trail hud: tracker window on/off, /trail minimap: minimap button on/off")
     return
   end
+  -- export and chat summary: refresh the parts that only load with their window open, then everything
+  pcall(scanRecipes)
+  local ok, s = pcall(snapshot)
+  if not ok or not s then print("|cffff5555LevelTrail: snapshot failed:|r " .. tostring(s)) return end
+  local g = math.floor(s.copper / 10000)
+  local sv = math.floor((s.copper % 10000) / 100)
+  local tal = #s.talents.list
+  local lb = s.libraryBooks
+  local summary = "Level " .. tostring(s.level) .. ", " .. g .. "g " .. sv .. "s, " .. tostring(s.zone) ..
+    (lb and (", library books " .. lb.count .. "/" .. lb.total) or "") .. " | " ..
+    count(s.equipped) .. " items, " .. tal .. " talents, " .. #s.questLog .. " quests, " .. count(s.recipes) .. " professions with recipes"
   local okP, p = pcall(pace, s)
   if okP and p and p.secToNext then
     summary = summary .. " | " .. thousands(p.xpPerHour or p.sessionXpPerHour) .. " XP/h, next level in " ..

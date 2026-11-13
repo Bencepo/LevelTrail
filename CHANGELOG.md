@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.4-beta
+
+- /trail hud, /trail minimap, /trail session and /trail help no longer rebuild the whole character snapshot first.
+- Bank and recipe scans wait a second after the last change instead of running on every single item move or craft.
+
 ## 1.3.3-beta
 
 - Less work while farming: the character snapshot (bags, quests, talents, reputation, spells) is rebuilt at most once a minute instead of after every loot or money change; right away on level-up, zone change, export and logout.
