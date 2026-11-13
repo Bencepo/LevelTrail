@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.5-beta
+
+- New icon: glowing footsteps climbing to a star, for the minimap button and the addon list.
+
 ## 1.3.4-beta
 
 - /trail hud, /trail minimap, /trail session and /trail help no longer rebuild the whole character snapshot first.
