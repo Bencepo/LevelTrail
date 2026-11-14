@@ -14,7 +14,8 @@ LevelTrailDB = LevelTrailDB or {}
 
 local ADDON, ns = ...
 ns = ns or {}
-local VERSION = 8 -- data version
+local VERSION = 9 -- data version
+local BUG_URL = "https://github.com/Bencepo/LevelTrail/issues/new/choose"
 local GetMetadata = C_AddOns.GetAddOnMetadata
 
 -- Item and money functions live in C_Item / C_CurrencyInfo on current clients. The old
@@ -34,6 +35,38 @@ local function try(fn, ...)
   local ok, a, b, c, d, e, f, g, h = pcall(fn, ...)
   if ok then return a, b, c, d, e, f, g, h end
   return nil
+end
+
+---------------------------------------------------------------- XP table and level cap
+-- XP needed for each level up to 60 (Classic table). If the game reports a different
+-- value for the current level, the other levels are scaled by the same factor.
+local XP_TABLE = { 400, 900, 1400, 2100, 2800, 3600, 4500, 5400, 6500, 7600, 8800, 10100, 11400, 12900, 14400,
+  16000, 17700, 19400, 21300, 23200, 25200, 27300, 29400, 31700, 34000, 36400, 38900, 41400, 44300, 47400,
+  50800, 54500, 58600, 62800, 67100, 71600, 76100, 80800, 85700, 90700, 95800, 101000, 106300, 111800, 117500,
+  123200, 129100, 135100, 141200, 147500, 153900, 160400, 167100, 173900, 180800, 187900, 195000, 202300, 209800 }
+
+local function maxLevel()
+  local m = try(GetMaxPlayerLevel)
+  if type(m) == "number" and m > 0 then return m end
+  return 60
+end
+
+local function xpForLevel(level, scale)
+  local v = XP_TABLE[level]
+  if not v then return nil end
+  return math.floor(v * (scale or 1) + 0.5)
+end
+
+-- XP values are 0 for a moment at login and logout; at the level cap UnitXPMax may stay 0.
+local function xpReady()
+  local level = UnitLevel("player") or 0
+  if level == 0 then return false end
+  return (UnitXPMax("player") or 0) > 0 or level >= maxLevel()
+end
+
+-- Last character bag: 4 on Classic clients, 5 where a reagent bag exists. Bank bags follow it.
+local function lastBagID()
+  return NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or 4
 end
 
 local function charKey()
@@ -83,6 +116,8 @@ local function zoneLevelRec(s, zone, level)
   return r
 end
 
+local sessionTouch -- defined with the sessions below
+
 local function clockTick()
   local s = store()
   local now = time()
@@ -94,7 +129,10 @@ local function clockTick()
       if z then z.time = z.time + d; z.last = date("%Y-%m-%d") end
       local zl = zoneLevelRec(s, clockZone, UnitLevel("player"))
       if zl then zl.t = zl.t + d end
-      if s.dungeonRun then s.dungeonRun.last = now end
+      -- a dungeon visit only runs on while the player is inside
+      if s.dungeonRun and try(IsInInstance) then s.dungeonRun.last = now end
+      -- being online keeps the play session going, XP or not
+      if sessionTouch then pcall(sessionTouch) end
     end
   end
   clockLast = now
@@ -105,6 +143,7 @@ local function levelInit()
   local s = store()
   local L = UnitLevel("player") or 0
   if L == 0 then return end
+  s.firstLevel = s.firstLevel or (s.splits and s.splits[1] and s.splits[1].level and s.splits[1].level - 1) or L
   if not s.levelSince or s.levelSince.level ~= L then
     s.levelSince = { level = L, online = s.online or 0, ts = time(), date = date("%Y-%m-%d %H:%M"), partial = true }
   end
@@ -131,10 +170,12 @@ end
 -- the difference to the total.
 local function toPattern(fmt)
   if type(fmt) ~= "string" or fmt == "" then return nil end
-  local p = fmt:gsub("%%%d+%$", "%%")
+  local p = fmt:gsub("%%%%", "\1") -- a literal percent sign
+  p = p:gsub("%%%d+%$", "%%")
   p = p:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1")
   p = p:gsub("%%s", "(.-)")
   p = p:gsub("%%d", "(%%d+)")
+  p = p:gsub("\1", "%%%%")
   return "^" .. p
 end
 
@@ -178,12 +219,14 @@ end
 local function bump(field, n)
   n = tonumber(n) or 1
   local s = store()
-  for _, rec in ipairs({ s.session, s.dungeonRun }) do
-    if rec then rec[field] = (rec[field] or 0) + n end
-  end
+  local cur = sessionTouch and sessionTouch()
+  if cur then cur[field] = (cur[field] or 0) + n end
+  if s.dungeonRun then s.dungeonRun[field] = (s.dungeonRun[field] or 0) + n end
 end
 
 -- Vendor value of looted items, from the game's own loot lines.
+-- For an item the client has not cached yet it returns 0 plus the item ID and count,
+-- so the value can be added once the item data arrives.
 local LOOT_MULTI = toPattern(LOOT_ITEM_SELF_MULTIPLE)
 local LOOT_SINGLE = toPattern(LOOT_ITEM_SELF)
 local function lootValue(msg)
@@ -192,11 +235,31 @@ local function lootValue(msg)
   if LOOT_MULTI then link, count = msg:match(LOOT_MULTI) end
   if not link and LOOT_SINGLE then link = msg:match(LOOT_SINGLE) end
   if not link then return 0 end
+  count = tonumber(count) or 1
   if not GetItemInfo then return 0 end
   -- try() returns at most 8 values; the sell price is the 11th
   local r = { pcall(GetItemInfo, link) }
   if not r[1] then return 0 end
-  return (tonumber(r[12]) or 0) * (tonumber(count) or 1)
+  if r[2] == nil then return 0, tonumber(link:match("item:(%d+)")), count end
+  return (tonumber(r[12]) or 0) * count
+end
+
+-- Loot of uncached items: item ID -> count, valued on GET_ITEM_INFO_RECEIVED.
+local lootPending = {}
+local function lootQueue(id, count)
+  if not id then return end
+  lootPending[id] = (lootPending[id] or 0) + (count or 1)
+  if C_Item and C_Item.RequestLoadItemDataByID then try(C_Item.RequestLoadItemDataByID, id) end
+end
+
+local function lootReceived(id, ok)
+  local count = id and lootPending[id]
+  if not count then return end
+  lootPending[id] = nil
+  if ok == false then return end
+  local r = { pcall(GetItemInfo, id) }
+  local v = r[1] and (tonumber(r[12]) or 0) * count or 0
+  if v > 0 then bump("loot", v) end
 end
 
 ---------------------------------------------------------------- dungeon runs
@@ -229,11 +292,17 @@ local function dungeonCheck()
         level = UnitLevel("player"), xp0 = xpTotal(s), copper0 = GetMoney() or 0 }
     else
       run.last = time()
+      run.outDead = nil
     end
-  elseif run and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("player")) then
-    -- left the instance alive; a corpse run back in keeps the visit going
-    run.last = time()
-    dungeonFinish(s)
+  elseif run then
+    if UnitIsDeadOrGhost and UnitIsDeadOrGhost("player") then
+      -- released outside: a corpse run back in keeps the visit going; the clock stops meanwhile
+      if not run.outDead then run.last = time(); run.outDead = true end
+    else
+      -- left the instance alive, or came back to life outside it
+      if not run.outDead then run.last = time() end
+      dungeonFinish(s)
+    end
   end
 end
 
@@ -351,6 +420,10 @@ local function onDeath()
     zone = GetRealZoneText and GetRealZoneText() or "", subzone = GetSubZoneText and GetSubZoneText() or "" }
   while #s.deaths > 100 do table.remove(s.deaths, 1) end
   s.deathCount = (s.deathCount or 0) + 1
+  -- every death per level (the list above keeps only the latest)
+  s.deathsByLevel = s.deathsByLevel or {}
+  local key = tostring(UnitLevel("player") or 0)
+  s.deathsByLevel[key] = (s.deathsByLevel[key] or 0) + 1
   local z = zoneRec(s, currentZone())
   if z then z.deaths = z.deaths + 1 end
   bump("deaths")
@@ -442,7 +515,9 @@ end
 
 ---------------------------------------------------------------- containers
 local function numSlots(bag)
-  return try(C_Container.GetContainerNumSlots, bag) or 0
+  ---@diagnostic disable-next-line: deprecated
+  local fn = C_Container and C_Container.GetContainerNumSlots or GetContainerNumSlots
+  return try(fn, bag) or 0
 end
 
 local function slotItem(bag, slot)
@@ -458,7 +533,9 @@ local function slotItem(bag, slot)
 end
 
 local function freeSlots(bag)
-  return try(C_Container.GetContainerNumFreeSlots, bag) or 0
+  ---@diagnostic disable-next-line: deprecated
+  local fn = C_Container and C_Container.GetContainerNumFreeSlots or GetContainerNumFreeSlots
+  return (try(fn, bag)) or 0
 end
 
 -- returns sizes per bag, item counts by id, and equippable gear found
@@ -508,7 +585,8 @@ local function professions()
       for _, id in ipairs(lines) do
         local info = try(C_TradeSkillUI.GetProfessionInfoBySkillLineID, id)
         if type(info) == "table" and (info.skillLevel or 0) > 0 then
-          addProf(out, info.professionName or info.parentProfessionName, info.skillLevel, info.maxSkillLevel)
+          -- the base name ("Mining"), not the expansion skill line, so it merges with GetProfessionInfo
+          addProf(out, info.parentProfessionName or info.professionName, info.skillLevel, info.maxSkillLevel)
         end
       end
     end
@@ -519,6 +597,9 @@ end
 -- Recipes can only be read while a profession window is open.
 local function scanRecipes()
   if not (C_TradeSkillUI and C_TradeSkillUI.GetAllRecipeIDs and C_TradeSkillUI.GetRecipeInfo) then return end
+  -- someone else's profession (a link, the guild list, an NPC crafter) is not the player's
+  if try(C_TradeSkillUI.IsTradeSkillLinked) or try(C_TradeSkillUI.IsTradeSkillGuild)
+    or try(C_TradeSkillUI.IsNPCCrafting) or try(IsTradeSkillLinked) then return end
   local ids = try(C_TradeSkillUI.GetAllRecipeIDs)
   if type(ids) ~= "table" or #ids == 0 then return end
   local profName = "?"
@@ -530,7 +611,7 @@ local function scanRecipes()
   for _, id in ipairs(ids) do
     local info = try(C_TradeSkillUI.GetRecipeInfo, id)
     if type(info) == "table" and info.name then
-      local rec = { id = id, name = info.name, difficulty = info.relativeDifficulty, craftable = info.numAvailable }
+      local rec = { id = id, name = info.name, difficulty = info.relativeDifficulty }
       if info.learned then known[#known + 1] = rec else unknown[#unknown + 1] = rec end
     end
   end
@@ -626,13 +707,16 @@ local function talents()
         if type(nodes) == "table" then
           for _, nodeID in ipairs(nodes) do
             local node = try(C_Traits.GetNodeInfo, cfg, nodeID)
-            if type(node) == "table" and (node.ranksPurchased or 0) > 0 then
+            -- currentRank includes granted (free) nodes, ranksPurchased does not
+            local rank = 0
+            if type(node) == "table" then rank = node.currentRank or node.ranksPurchased or 0 end
+            if type(node) == "table" and rank > 0 then
               local name
               local entryID = node.activeEntry and node.activeEntry.entryID or (node.entryIDs and node.entryIDs[1])
               local entry = entryID and try(C_Traits.GetEntryInfo, cfg, entryID)
               local def = type(entry) == "table" and entry.definitionID and try(C_Traits.GetDefinitionInfo, entry.definitionID)
               if type(def) == "table" then name = def.overrideName or spellName(def.spellID) end
-              out.list[#out.list + 1] = { name = name, rank = node.ranksPurchased, max = node.maxRanks,
+              out.list[#out.list + 1] = { name = name, rank = rank, max = node.maxRanks,
                 tree = treeID, node = nodeID, x = node.posX, y = node.posY }
             end
           end
@@ -650,24 +734,56 @@ local function talents()
 end
 
 ---------------------------------------------------------------- reputation
+-- One reputation API for both client styles: count, row(i) and expand/collapse.
+-- row(i) returns a table: name, isHeader, isCollapsed, hasRep and the standing fields.
+local function repAPI()
+  if C_Reputation and C_Reputation.GetNumFactions and C_Reputation.GetFactionDataByIndex then
+    return C_Reputation.GetNumFactions, function(i)
+      local f = try(C_Reputation.GetFactionDataByIndex, i)
+      if type(f) ~= "table" or not f.name then return nil end
+      return { name = f.name, isHeader = f.isHeader, isCollapsed = f.isCollapsed, hasRep = f.isHeaderWithRep,
+        standing = f.reaction, value = f.currentStanding, min = f.currentReactionThreshold, max = f.nextReactionThreshold }
+    end, C_Reputation.ExpandFactionHeader, C_Reputation.CollapseFactionHeader
+  elseif GetNumFactions and GetFactionInfo then
+    return GetNumFactions, function(i)
+      local name, _, standing, min, max, value, _, _, isHeader, isCollapsed, hasRep = try(GetFactionInfo, i)
+      if not name then return nil end
+      return { name = name, isHeader = isHeader, isCollapsed = isCollapsed, hasRep = hasRep,
+        standing = standing, value = value, min = min, max = max }
+    end, ExpandFactionHeader, CollapseFactionHeader
+  end
+end
+
+-- The game lists only the rows the player has expanded: open every header for the
+-- scan and close the ones that were closed again afterwards.
 local function reputation()
   local out = {}
-  if C_Reputation and C_Reputation.GetNumFactions and C_Reputation.GetFactionDataByIndex then
-    local n = try(C_Reputation.GetNumFactions) or 0
-    for i = 1, n do
-      local f = try(C_Reputation.GetFactionDataByIndex, i)
-      if type(f) == "table" and f.name and not f.isHeader then
-        out[#out + 1] = { name = f.name, standing = f.reaction, value = f.currentStanding,
-          min = f.currentReactionThreshold, max = f.nextReactionThreshold }
+  local numFn, row, expand, collapse = repAPI()
+  if not numFn then return out end
+  local reopened = {}
+  if expand then
+    local i, guard = 1, 0
+    while i <= (try(numFn) or 0) and guard < 500 do
+      guard = guard + 1
+      local f = row(i)
+      if f and f.isHeader and f.isCollapsed then
+        reopened[f.name] = true
+        try(expand, i)
       end
+      i = i + 1
     end
-  elseif GetNumFactions and GetFactionInfo then
-    local n = try(GetNumFactions) or 0
-    for i = 1, n do
-      local name, _, standing, min, max, value, _, _, isHeader = try(GetFactionInfo, i)
-      if name and not isHeader then
-        out[#out + 1] = { name = name, standing = standing, value = value, min = min, max = max }
-      end
+  end
+  for i = 1, try(numFn) or 0 do
+    local f = row(i)
+    -- headers with a standing of their own (hasRep) are factions too
+    if f and (not f.isHeader or f.hasRep) then
+      out[#out + 1] = { name = f.name, standing = f.standing, value = f.value, min = f.min, max = f.max }
+    end
+  end
+  if collapse and next(reopened) then
+    for i = try(numFn) or 0, 1, -1 do
+      local f = row(i)
+      if f and f.isHeader and reopened[f.name] and not f.isCollapsed then try(collapse, i) end
     end
   end
   return out
@@ -698,12 +814,15 @@ local function spells()
   if C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines and C_SpellBook.GetSpellBookSkillLineInfo and C_SpellBook.GetSpellBookItemInfo then
     local lines = try(C_SpellBook.GetNumSpellBookSkillLines) or 0
     local bank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0
+    -- only learned spells: no "future" (not yet learned) entries, no flyouts, no off-spec lines
+    local SPELL = Enum and Enum.SpellBookItemType and Enum.SpellBookItemType.Spell
     for l = 1, lines do
       local li = try(C_SpellBook.GetSpellBookSkillLineInfo, l)
-      if type(li) == "table" then
+      if type(li) == "table" and not li.offSpecID then
         for i = (li.itemIndexOffset or 0) + 1, (li.itemIndexOffset or 0) + (li.numSpellBookItems or 0) do
           local si = try(C_SpellBook.GetSpellBookItemInfo, i, bank)
-          if type(si) == "table" and si.name and not si.isPassive then
+          if type(si) == "table" and si.name and not si.isPassive and not si.isOffSpec
+            and (not SPELL or si.itemType == nil or si.itemType == SPELL) then
             out[#out + 1] = { id = si.spellID, name = si.name, sub = si.subName, tab = li.name }
           end
         end
@@ -715,7 +834,8 @@ local function spells()
       local tabName, _, offset, num = try(GetSpellTabInfo, tab)
       for i = (offset or 0) + 1, (offset or 0) + (num or 0) do
         local name, sub, id = try(GetSpellBookItemName, i, "spell")
-        if name then out[#out + 1] = { id = id, name = name, sub = sub, tab = tabName } end
+        local kind = GetSpellBookItemInfo and try(GetSpellBookItemInfo, i, "spell")
+        if name and kind ~= "FUTURESPELL" then out[#out + 1] = { id = id, name = name, sub = sub, tab = tabName } end
       end
     end
   end
@@ -763,46 +883,22 @@ local function flipProfit()
 end
 
 ---------------------------------------------------------------- sessions (xp and gold per play session)
--- The current session lives in the saved data so a /reload continues it.
-local function sessionGet()
-  local s = store()
-  local xpMax = UnitXPMax("player") or 0
-  if xpMax == 0 then return nil end            -- values not loaded yet (login/logout)
-  local cur = s.session
-  if not cur or (time() - (cur.last or 0)) > 900 then
-    cur = { start = time(), date = date("%Y-%m-%d %H:%M"), level = UnitLevel("player"),
-      copper = GetMoney() or 0, xpGained = 0, lastXP = UnitXP("player") or 0, lastMax = xpMax, lastLevel = UnitLevel("player"),
-      flip = flipProfit() }
-    s.session = cur
-  end
-  return cur
-end
+-- The current session lives in the saved data so a /reload continues it. It ends after
+-- 15 minutes without the player being online (the minute clock keeps it alive).
+local SESSION_GAP = 900
 
-local function sessionTrackXP()
-  local cur = sessionGet()
-  if not cur then return end
-  local xp, max, lvl = UnitXP("player") or 0, UnitXPMax("player") or 0, UnitLevel("player") or 0
-  if lvl > (cur.lastLevel or lvl) then
-    cur.xpGained = cur.xpGained + (cur.lastMax - cur.lastXP) + xp
-    addXP(cur.lastLevel, "total", cur.lastMax - cur.lastXP)
-    addXP(lvl, "total", xp)
-  elseif xp > cur.lastXP then
-    cur.xpGained = cur.xpGained + (xp - cur.lastXP)
-    addXP(lvl, "total", xp - cur.lastXP)
-  end
-  cur.lastXP, cur.lastMax, cur.lastLevel, cur.last = xp, max, lvl, time()
-end
-
-local function sessionSave()
-  local cur = sessionGet()
-  if not cur then return end
+-- Writes a session into the list. A closed session ends at its last activity.
+local function sessionSave(cur, closed)
+  if not cur or not cur.start then return end
   local s = store()
   s.sessions = s.sessions or {}
-  local rec = { date = cur.date, minutes = math.floor((time() - cur.start) / 60),
-    levelStart = cur.level, levelEnd = UnitLevel("player"),
-    xpGained = cur.xpGained, copperDelta = (GetMoney() or 0) - cur.copper,
+  local stop = closed and (cur.last or cur.start) or time()
+  local copperNow = closed and cur.lastCopper or GetMoney() or 0
+  local rec = { date = cur.date, minutes = math.floor(math.max(0, stop - cur.start) / 60),
+    levelStart = cur.level, levelEnd = closed and (cur.lastLevel or cur.level) or UnitLevel("player"),
+    xpGained = cur.xpGained or 0, copperDelta = copperNow - (cur.copper or copperNow),
     kills = cur.kills or 0, quests = cur.quests or 0, deaths = cur.deaths or 0, loot = cur.loot or 0 }
-  local flip = flipProfit()
+  local flip = closed and cur.lastFlip or flipProfit()
   if flip then
     if not cur.flip then cur.flip = flip end
     rec.flipProfit = flip - cur.flip
@@ -823,27 +919,114 @@ local function sessionSave()
   end
 end
 
+local function sessionExpired(cur)
+  return not cur or (time() - (cur.last or 0)) > SESSION_GAP
+end
+
+-- The running session; an expired one is saved and a new one started.
+local function sessionGet()
+  if not xpReady() then return nil end
+  local s = store()
+  local cur = s.session
+  if cur and sessionExpired(cur) then
+    sessionSave(cur, true)
+    cur = nil
+  end
+  if not cur then
+    local now = time()
+    cur = { start = now, last = now, date = date("%Y-%m-%d %H:%M"), level = UnitLevel("player"),
+      copper = GetMoney() or 0, xpGained = 0, flip = flipProfit() }
+    s.session = cur
+  end
+  return cur
+end
+
+-- Marks activity: keeps the session from expiring and remembers where it stands.
+sessionTouch = function()
+  local cur = sessionGet()
+  if not cur then return nil end
+  cur.last = time()
+  cur.lastCopper = GetMoney() or cur.lastCopper
+  cur.lastLevel = UnitLevel("player") or cur.lastLevel
+  cur.lastFlip = flipProfit() or cur.lastFlip
+  return cur
+end
+
+-- XP gained since the last check, kept apart from the session so no gain is lost when a
+-- session starts. A jump over several levels adds the full XP of the levels in between.
+local function trackXP()
+  if not xpReady() then return end
+  local s = store()
+  local xp, max, lvl = UnitXP("player") or 0, UnitXPMax("player") or 0, UnitLevel("player") or 0
+  local t = s.xpTrack
+  local gained = 0
+  if t and t.level then
+    if lvl > t.level then
+      local scale = XP_TABLE[t.level] and (t.max or 0) > 0 and t.max / XP_TABLE[t.level] or 1
+      local first = math.max(0, (t.max or 0) - (t.xp or 0))
+      addXP(t.level, "total", first)
+      gained = first
+      for L = t.level + 1, lvl - 1 do
+        local need = xpForLevel(L, scale) or 0
+        addXP(L, "total", need)
+        gained = gained + need
+      end
+      addXP(lvl, "total", xp)
+      gained = gained + xp
+    elseif lvl == t.level and xp > (t.xp or 0) then
+      gained = xp - (t.xp or 0)
+      addXP(lvl, "total", gained)
+    elseif lvl == t.level and xp < (t.xp or 0) and not t.dropSeen then
+      -- the XP event can come before the level changes: wait for the level instead of
+      -- taking the small value as the new start (a second drop in a row is taken as it is)
+      t.dropSeen = true
+      return
+    end
+  end
+  s.xpTrack = { xp = xp, max = max, level = lvl }
+  if gained > 0 then
+    local cur = sessionTouch()
+    if cur then cur.xpGained = (cur.xpGained or 0) + gained end
+  end
+end
+
 ---------------------------------------------------------------- bank (only readable while the bank is open)
+-- Bank bag IDs: the bank itself plus the bank bags after the character bags (5-10 on
+-- Classic clients); the character bank tabs where the client has them.
+local function bankBagIDs()
+  local B = Enum and Enum.BagIndex
+  if B and B.CharacterBankTab_1 then
+    local ids = {}
+    for i = 1, 6 do
+      local id = B["CharacterBankTab_" .. i]
+      if id then ids[#ids + 1] = id end
+    end
+    return ids
+  end
+  local ids = { BANK_CONTAINER or -1 }
+  local first = lastBagID() + 1
+  for bag = first, first + (NUM_BANKBAGSLOTS or 6) - 1 do ids[#ids + 1] = bag end
+  return ids
+end
+
+local bankOpen = false
 local function scanBank()
+  -- bank contents can only be read while it is open (the scan may run a second late)
+  if not bankOpen then return end
   local items, gear, sizes, total = {}, {}, {}, 0
-  local ids = { -1 }
-  -- bank bags follow the character bags; ids differ between clients, so probe a range
-  for bag = 5, 13 do ids[#ids + 1] = bag end
-  for _, bag in ipairs(ids) do
-    if bag == -1 or bag > 5 then
-      local n = numSlots(bag)
-      if n > 0 then
-        sizes[#sizes + 1] = { bag = bag, slots = n }
-        total = total + n
-        for slot = 1, n do
-          local id, count, link = slotItem(bag, slot)
-          if id then
-            items[id] = (items[id] or 0) + (count or 1)
-            if link then
-              local loc = itemEquipLoc(link)
-              if loc and loc ~= "" and loc ~= "INVTYPE_BAG" and loc ~= "INVTYPE_NON_EQUIP_IGNORE" and loc ~= "INVTYPE_AMMO" then
-                gear[#gear + 1] = itemRecord(link, count)
-              end
+  for _, bag in ipairs(bankBagIDs()) do
+    local n = numSlots(bag)
+    if n > 0 then
+      sizes[#sizes + 1] = { bag = bag, slots = n }
+      total = total + n
+      for slot = 1, n do
+        local id, count, link = slotItem(bag, slot)
+        if id then
+          items[id] = (items[id] or 0) + (count or 1)
+          if link then
+            local loc = itemEquipLoc(link)
+            if loc and loc ~= "" and loc ~= "INVTYPE_BAG" and loc ~= "INVTYPE_NON_EQUIP_IGNORE" and loc ~= "INVTYPE_AMMO" then
+              gear[#gear + 1] = itemRecord(link, count)
             end
           end
         end
@@ -854,30 +1037,10 @@ local function scanBank()
   local s = store()
   local found = 0
   for _ in pairs(items) do found = found + 1 end
-  s.bank = { date = date("%Y-%m-%d %H:%M"), sizes = sizes, items = items, gear = gear, kinds = found,
-    debug = { C_Bank = funcNames(C_Bank) } }
+  s.bank = { date = date("%Y-%m-%d %H:%M"), sizes = sizes, items = items, gear = gear, kinds = found }
 end
 
 ---------------------------------------------------------------- pace (XP per hour, time to the next level and the cap)
--- XP needed for each level up to 60 (Classic table). If the game reports a different
--- value for the current level, the remaining levels are scaled by the same factor.
-local XP_TABLE = { 400, 900, 1400, 2100, 2800, 3600, 4500, 5400, 6500, 7600, 8800, 10100, 11400, 12900, 14400,
-  16000, 17700, 19400, 21300, 23200, 25200, 27300, 29400, 31700, 34000, 36400, 38900, 41400, 44300, 47400,
-  50800, 54500, 58600, 62800, 67100, 71600, 76100, 80800, 85700, 90700, 95800, 101000, 106300, 111800, 117500,
-  123200, 129100, 135100, 141200, 147500, 153900, 160400, 167100, 173900, 180800, 187900, 195000, 202300, 209800 }
-
-local function maxLevel()
-  local m = try(GetMaxPlayerLevel)
-  if type(m) == "number" and m > 0 then return m end
-  return 60
-end
-
-local function xpForLevel(level, scale)
-  local v = XP_TABLE[level]
-  if not v then return nil end
-  return math.floor(v * (scale or 1) + 0.5)
-end
-
 -- XP per online hour from the last full levels (up to 5) plus the running level.
 -- Session XP per hour comes from the current play session.
 local function pace(s)
@@ -913,13 +1076,18 @@ local function pace(s)
     if d >= 300 and (cur.xpGained or 0) > 0 then out.sessionXpPerHour = math.floor(cur.xpGained / d * 3600 + 0.5) end
   end
   local toNext = xpMax - xp
-  local toCap = toNext
-  for L = level + 1, cap - 1 do toCap = toCap + (xpForLevel(L, scale) or 0) end
+  local toCap = toNext ---@type number?
+  -- without XP values for every level up to the cap there is no honest total
+  for L = level + 1, cap - 1 do
+    local need = xpForLevel(L, scale)
+    if not need then toCap = nil; break end
+    toCap = (toCap or 0) + need
+  end
   out.xpToNext, out.xpToCap = toNext, toCap
   local rate = out.xpPerHour or out.sessionXpPerHour
   if rate and rate > 0 then
     out.secToNext = math.floor(toNext / rate * 3600 + 0.5)
-    out.secToCap = math.floor(toCap / rate * 3600 + 0.5)
+    out.secToCap = toCap and math.floor(toCap / rate * 3600 + 0.5) or nil
     out.rateFrom = out.xpPerHour and "levels" or "session"
   end
   return out
@@ -934,17 +1102,24 @@ local function hm(sec)
 end
 
 local function thousands(n)
-  local str = tostring(math.floor(n or 0))
-  local out = str:reverse():gsub("(%d%d%d)", "%1,"):reverse()
-  return (out:gsub("^,", ""))
+  n = math.floor(tonumber(n) or 0)
+  local sign = n < 0 and "-" or ""
+  local out = tostring(math.abs(n)):reverse():gsub("(%d%d%d)", "%1,"):reverse()
+  return sign .. (out:gsub("^,", ""))
 end
 
 ---------------------------------------------------------------- snapshot
+-- The completed quest list is long: read at login and after a quest turn-in only.
+local questsDirty = true
+
+-- Returns the character data, or nil and "not ready" while the game has not loaded the
+-- character's values yet (a moment after login).
 local function snapshot()
   local _, name, realm = charKey()
-  if (UnitXPMax("player") or 0) == 0 and (UnitLevel("player") or 0) < 60 then return nil end  -- not loaded yet
+  if not xpReady() then return nil, "not ready" end
   local s = store()
-  local sizes, items, gear, free = scanBags(0, 5)
+  local lastBag = lastBagID()
+  local sizes, items, gear, free = scanBags(0, lastBag)
   s.version = VERSION
   s.ts = time()
   s.date = date("%Y-%m-%d %H:%M")
@@ -960,23 +1135,26 @@ local function snapshot()
   s.subzone = GetSubZoneText and GetSubZoneText() or ""
   s.hearth = try(GetBindLocation)
   s.bags = { backpack = sizes[0], sizes[1], sizes[2], sizes[3], sizes[4] }
-  s.reagentBag = sizes[5]
+  s.reagentBag = lastBag >= 5 and sizes[5] or nil
   s.freeSlots = free
   s.items = items
   s.bagGear = gear
   s.equipped = equipped()
   s.professions = professions()
   s.questLog = questLog()
-  s.completedQuests = completedQuests()
+  if questsDirty or not s.completedQuests then
+    s.completedQuests = completedQuests()
+    questsDirty = false
+  end
   s.talents = talents()
   s.reputation = reputation()
   s.libraryBooks = libraryBooks()
-  s.vendorFloor = vendorFloorLedger()
+  s.vendorFloor = nil -- read from VendorFloor at export time instead of copying its ledger here
   s.sheet = sheet()
   s.spells = spells()
   s.api = apiInfo()
-  sessionTrackXP()
-  sessionSave()
+  trackXP()
+  sessionSave(sessionGet())
   clockTick()
   levelInit()
   goldDay(s)
@@ -991,8 +1169,8 @@ local snapDirty, snapPending = false, false
 local function scheduleSnapshot()
   snapDirty = true
 end
-local function flushSnapshot()
-  if not snapDirty then return end
+local function flushSnapshot(force)
+  if not (snapDirty or force) then return end
   snapDirty = false
   pcall(snapshot)
 end
@@ -1005,6 +1183,29 @@ local function snapshotSoon()
   end)
 end
 
+---------------------------------------------------------------- data from older versions
+local function migrate()
+  local s = store()
+  -- XP tracking moved out of the session (1.4)
+  if not s.xpTrack then
+    local cur = s.session
+    if cur and cur.lastLevel and cur.lastXP then
+      s.xpTrack = { xp = cur.lastXP, max = cur.lastMax, level = cur.lastLevel }
+    elseif s.level and s.xp then
+      s.xpTrack = { xp = s.xp, max = s.xpMax, level = s.level }
+    end
+  end
+  if s.session then s.session.lastXP, s.session.lastMax = nil, nil end
+  -- deaths per level: rebuilt from the death list when it still holds every death
+  if not s.deathsByLevel and s.deaths and #s.deaths >= (s.deathCount or 0) then
+    s.deathsByLevel = {}
+    for _, d in ipairs(s.deaths) do
+      local key = tostring(d.level or 0)
+      s.deathsByLevel[key] = (s.deathsByLevel[key] or 0) + 1
+    end
+  end
+end
+
 ---------------------------------------------------------------- events
 local f = CreateFrame("Frame")
 local EVENTS = { "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_ENTERING_WORLD", "PLAYER_MONEY",
@@ -1012,10 +1213,10 @@ local EVENTS = { "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_ENTERING_WORLD", "PLAY
   "PLAYER_XP_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "CHARACTER_POINTS_CHANGED", "BANKFRAME_OPENED",
   "PLAYERBANKSLOTS_CHANGED", "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "PLAYER_DEAD",
   "CHAT_MSG_COMBAT_XP_GAIN", "CHAT_MSG_SYSTEM", "MERCHANT_SHOW", "MERCHANT_CLOSED", "UPDATE_INVENTORY_DURABILITY",
-  "CHAT_MSG_LOOT", "PLAYER_CONTROL_LOST", "PLAYER_CONTROL_GAINED", "PLAYER_ALIVE", "PLAYER_UNGHOST" }
+  "CHAT_MSG_LOOT", "PLAYER_CONTROL_LOST", "PLAYER_CONTROL_GAINED", "PLAYER_ALIVE", "PLAYER_UNGHOST",
+  "GET_ITEM_INFO_RECEIVED" }
 for _, ev in ipairs(EVENTS) do pcall(f.RegisterEvent, f, ev) end
 
-local bankOpen = false
 f:RegisterEvent("BANKFRAME_CLOSED")
 
 -- Moving items in the bank and crafting fire these events many times in a row:
@@ -1031,6 +1232,7 @@ local function soon(fn)
 end
 f:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
+    pcall(migrate)
     pcall(snapshot)
     clockZone = currentZone()
     C_Timer.NewTicker(60, function()
@@ -1038,11 +1240,17 @@ f:SetScript("OnEvent", function(_, event, ...)
       flushSnapshot()
     end)
   elseif event == "PLAYER_LOGOUT" then
-    flushSnapshot()
     pcall(clockTick)
     pcall(flightCheck)
+    -- the session as of its last activity, in case the values are gone already
+    pcall(function()
+      local cur = store().session
+      if cur and not sessionExpired(cur) then sessionSave(cur, true) end
+    end)
+    flushSnapshot(true)
   elseif event == "PLAYER_LEVEL_UP" then
     pcall(onLevelUp, ...)
+    pcall(trackXP)
     snapshotSoon()
   elseif event == "QUEST_TURNED_IN" then
     local questID, xpReward = ...
@@ -1054,6 +1262,7 @@ f:SetScript("OnEvent", function(_, event, ...)
       s.questsByLevel[key] = (s.questsByLevel[key] or 0) + 1
       bump("quests")
     end)
+    questsDirty = true
     if BOOK_IDS[questID] then
       -- the completed flag can lag behind the event a moment
       local function report()
@@ -1072,13 +1281,17 @@ f:SetScript("OnEvent", function(_, event, ...)
       pcall(bump, "kills")
     end
   elseif event == "CHAT_MSG_LOOT" then
-    local okV, v = pcall(lootValue, ...)
-    if okV and v > 0 then pcall(bump, "loot", v) end
+    local okV, v, id, n = pcall(lootValue, ...)
+    if okV and v > 0 then pcall(bump, "loot", v)
+    elseif okV and id then pcall(lootQueue, id, n) end
+  elseif event == "GET_ITEM_INFO_RECEIVED" then
+    pcall(lootReceived, ...)
   elseif event == "PLAYER_CONTROL_LOST" or event == "PLAYER_CONTROL_GAINED" then
     -- the taxi flag can lag behind the control event a moment
     if C_Timer and C_Timer.After then C_Timer.After(1, function() pcall(flightCheck) end) else pcall(flightCheck) end
   elseif event == "PLAYER_ALIVE" or event == "PLAYER_UNGHOST" then
     pcall(ghostCheck)
+    pcall(dungeonCheck)
   elseif event == "CHAT_MSG_SYSTEM" then
     local n = numberIn(..., EXPLORE_PATTERN)
     if n then pcall(addXP, UnitLevel("player"), "explore", n) end
@@ -1089,6 +1302,8 @@ f:SetScript("OnEvent", function(_, event, ...)
     pcall(dungeonCheck)
     snapshotSoon()
   elseif event == "PLAYER_ENTERING_WORLD" then
+    -- the time before the loading screen belongs to the zone left behind
+    pcall(clockTick)
     pcall(dungeonCheck)
     pcall(flightCheck)
     snapshotSoon()
@@ -1100,7 +1315,8 @@ f:SetScript("OnEvent", function(_, event, ...)
   elseif event == "UPDATE_INVENTORY_DURABILITY" then
     pcall(repairCheck)
   elseif event == "PLAYER_XP_UPDATE" then
-    pcall(sessionTrackXP)
+    pcall(trackXP)
+    scheduleSnapshot()
   elseif event == "BANKFRAME_OPENED" then
     bankOpen = true
     pcall(scanBank)
@@ -1267,7 +1483,8 @@ local function buildExport(s)
     addonVersion = s.version, level = s.level, xp = s.xp, xpMax = s.xpMax,
     online = s.online, splits = splits, levelSince = s.levelSince, xpSources = s.xpSources,
     deaths = deaths, deathCount = s.deathCount or #allDeaths, goldDays = goldDays, repairs = s.repairs,
-    sessionMonths = months, libraryBooks = s.libraryBooks, zones = zones, pace = pace(s), vendorFloor = vfOut(s.vendorFloor),
+    sessionMonths = months, libraryBooks = s.libraryBooks, zones = zones, pace = pace(s), vendorFloor = vfOut(vendorFloorLedger()),
+    deathsByLevel = s.deathsByLevel, firstLevel = s.firstLevel,
     zoneLevels = zoneLevels, dungeons = dungeons, dungeonRun = s.dungeonRun and { name = s.dungeonRun.name, date = s.dungeonRun.date } or nil,
     travel = s.travel, questStats = questStats, talentTrees = trees,
     rested = s.rested, copper = s.copper, zone = s.zone, subzone = s.subzone, hearth = s.hearth,
@@ -1286,13 +1503,15 @@ local function buildExport(s)
     known[prof] = A()
     for _, x in ipairs(r.known or {}) do known[prof][#known[prof] + 1] = x.name end
     open[prof] = A()
+    -- still gives skill: optimal (0), medium (1) or easy (2); trivial is 3
     for _, x in ipairs(r.unknown or {}) do
-      if (x.difficulty or 0) > 0 then open[prof][#open[prof] + 1] = x.name end
+      if x.difficulty and x.difficulty < 3 then open[prof][#open[prof] + 1] = x.name end
     end
   end
   local best, order = {}, {}
   for _, sp in ipairs(s.spells or {}) do
-    local r = tonumber((sp.sub or ""):match("Rank (%d+)")) or 0
+    -- "Rank 3", "Rang 3", "Rango 3": the number is the rank in every language
+    local r = tonumber((sp.sub or ""):match("(%d+)")) or 0
     if not best[sp.name] then
       best[sp.name] = { name = sp.name, rank = r, tab = sp.tab }
       order[#order + 1] = sp.name
@@ -1300,19 +1519,74 @@ local function buildExport(s)
       best[sp.name].rank = r
     end
   end
+  local completed = A()
+  for i, id in ipairs(s.completedQuests or {}) do completed[i] = id end
   local spellList = A()
   for _, n in ipairs(order) do spellList[#spellList + 1] = best[n] end
   return { levelTrail = 4, char = char,
-    quests = { date = s.date, log = log, completed = A(s.completedQuests) },
+    quests = { date = s.date, log = log, completed = completed },
     recipes = { date = s.date, known = known, inRange = open },
     spells = { date = s.date, spells = spellList },
     equipped = equippedOut }
+end
+
+---------------------------------------------------------------- report a bug
+-- Addons cannot open a browser: a small window holds the issue link, selected for Ctrl+C.
+local bugFrame
+local function showBugReport()
+  if not bugFrame then
+    local win = CreateFrame("Frame", "LevelTrailBugFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    bugFrame = win
+    tinsert(UISpecialFrames, "LevelTrailBugFrame")
+    win:SetSize(420, 112)
+    win:SetPoint("CENTER", 0, 120)
+    win:SetFrameStrata("FULLSCREEN_DIALOG")
+    win:SetClampedToScreen(true)
+    win:SetMovable(true)
+    win:EnableMouse(true)
+    win:RegisterForDrag("LeftButton")
+    win:SetScript("OnDragStart", win.StartMoving)
+    win:SetScript("OnDragStop", win.StopMovingOrSizing)
+    if win.SetBackdrop then
+      win:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+    end
+    local title = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", 14, -12)
+    title:SetText("Report a bug")
+    local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", -2, -2)
+    local edit = CreateFrame("EditBox", nil, win, "InputBoxTemplate")
+    edit:SetPoint("TOPLEFT", 20, -38)
+    edit:SetPoint("RIGHT", -16, 0)
+    edit:SetHeight(24)
+    edit:SetAutoFocus(false)
+    edit:SetScript("OnEscapePressed", function() win:Hide() end)
+    edit:SetScript("OnTextChanged", function(self, user)
+      if user then self:SetText(BUG_URL) self:HighlightText() end
+    end)
+    edit:SetScript("OnMouseUp", function(self) self:HighlightText() end)
+    win.edit = edit
+    local hint = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    hint:SetPoint("TOPLEFT", edit, "BOTTOMLEFT", -4, -8)
+    hint:SetPoint("RIGHT", -14, 0)
+    hint:SetJustifyH("LEFT")
+    hint:SetText("Copy with Ctrl+C. No GitHub account? Comment on CurseForge.")
+  end
+  bugFrame.edit:SetText(BUG_URL)
+  bugFrame:Show()
+  bugFrame.edit:SetFocus()
+  bugFrame.edit:HighlightText()
 end
 
 local exportFrame
 local function showExport(text, summary)
   if not exportFrame then
     local win = CreateFrame("Frame", "LevelTrailFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    exportFrame = win
+    -- Esc closes the window even when the text box does not have the focus
+    tinsert(UISpecialFrames, "LevelTrailFrame")
     win:SetSize(560, 360)
     win:SetPoint("CENTER")
     win:SetFrameStrata("DIALOG")
@@ -1335,6 +1609,12 @@ local function showExport(text, summary)
     win.info:SetJustifyH("LEFT")
     local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -2, -2)
+    local bug = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+    bug:SetSize(110, 22)
+    bug:SetPoint("TOPRIGHT", -32, -8)
+    bug:SetText("Report a bug")
+    bug:SetScript("OnClick", showBugReport)
+    win.info:SetPoint("RIGHT", bug, "LEFT", -8, 0)
     local scroll = CreateFrame("ScrollFrame", "LevelTrailScroll", win, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 14, -64)
     scroll:SetPoint("BOTTOMRIGHT", -34, 14)
@@ -1352,7 +1632,6 @@ local function showExport(text, summary)
     edit:SetScript("OnMouseUp", function(self) self:HighlightText() end)
     scroll:SetScrollChild(edit)
     win.edit = edit
-    exportFrame = win
   end
   exportFrame.text = text
   exportFrame.info:SetText((summary or "") .. "\nPress Ctrl+C, then paste it at bencepo.github.io/leveltrail. Esc closes.")
@@ -1508,9 +1787,16 @@ local function minimapTooltip(tip)
   tip:AddLine("Drag: move. /trail minimap: hide or show", 0.6, 0.8, 1)
 end
 
+-- Account-wide settings live in their own saved variable, apart from the characters
+-- in LevelTrailDB (which only holds "Name-Realm" entries).
 local function minimapSettings()
-  LevelTrailDB._minimap = LevelTrailDB._minimap or {}
-  return LevelTrailDB._minimap
+  LevelTrailSettings = type(LevelTrailSettings) == "table" and LevelTrailSettings or {}
+  if type(LevelTrailDB._minimap) == "table" then
+    LevelTrailSettings.minimap = LevelTrailSettings.minimap or LevelTrailDB._minimap
+    LevelTrailDB._minimap = nil
+  end
+  LevelTrailSettings.minimap = LevelTrailSettings.minimap or {}
+  return LevelTrailSettings.minimap
 end
 
 local minimapEvents = CreateFrame("Frame")
@@ -1522,7 +1808,9 @@ minimapEvents:SetScript("OnEvent", function()
 end)
 
 -- Entry in the game's addon menu (the compartment next to the minimap), if the client has one.
-function LevelTrail_OnCompartmentClick(_, button)
+-- Depending on the client the second argument is the button name or a table with it.
+function LevelTrail_OnCompartmentClick(_, input)
+  local button = type(input) == "table" and input.buttonName or input
   minimapClick(button)
 end
 
@@ -1543,26 +1831,42 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
     if not okH then print("|cffff5555LevelTrail: tracker failed:|r " .. tostring(errH)) end
     return
   elseif msg == "minimap" then
+    if not minimapButton then
+      print("|cffff5555LevelTrail:|r there is no minimap button (LibDBIcon did not load). Use /trail or the addon menu.")
+      return
+    end
     local st = minimapSettings()
     st.hide = not st.hide
-    if minimapButton then minimapButton:SetShown(not st.hide) end
+    minimapButton:SetShown(not st.hide)
     print("|cff7fbf3f" .. TITLE .. "|r minimap button " .. (st.hide and "hidden" or "shown"))
+    return
+  elseif msg == "bug" then
+    showBugReport()
     return
   elseif msg == "session" then
     local cur = store().session
     if not cur or not cur.start then print("|cff7fbf3fLevelTrail:|r no session yet."); return end
+    if sessionExpired(cur) then
+      print(("|cff7fbf3fLevelTrail:|r no running session. The last one started %s and lasted %s."):format(
+        tostring(cur.date), hm((cur.last or cur.start) - cur.start)))
+      return
+    end
     print(("|cff7fbf3fLevelTrail session|r %s: %s, %s XP, %d kills, %d quests, %d deaths, loot worth %s"):format(
       hm(time() - cur.start), cur.level == UnitLevel("player") and ("level " .. cur.level) or (cur.level .. " -> " .. UnitLevel("player")),
       thousands(cur.xpGained), cur.kills or 0, cur.quests or 0, cur.deaths or 0,
       GetCoinTextureString and GetCoinTextureString(cur.loot or 0) or tostring(cur.loot or 0)))
     return
   elseif msg == "help" then
-    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail session: this session so far, /trail hud: tracker window on/off, /trail minimap: minimap button on/off")
+    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail session: this session so far, /trail hud: tracker window on/off, /trail minimap: minimap button on/off, /trail bug: report a bug")
     return
   end
   -- export and chat summary: refresh the parts that only load with their window open, then everything
   pcall(scanRecipes)
-  local ok, s = pcall(snapshot)
+  local ok, s, why = pcall(snapshot)
+  if ok and not s and why == "not ready" then
+    print("|cff7fbf3fLevelTrail:|r the game has not loaded your character yet. Try again in a moment.")
+    return
+  end
   if not ok or not s then print("|cffff5555LevelTrail: snapshot failed:|r " .. tostring(s)) return end
   local g = math.floor(s.copper / 10000)
   local sv = math.floor((s.copper % 10000) / 100)
@@ -1595,5 +1899,7 @@ end
 -- For the automated tests (tests/*_spec.lua, run with busted outside the game); unused in the game.
 ns.test = {
   toPattern = toPattern, numberIn = numberIn, lootValue = lootValue, xpForLevel = xpForLevel,
-  pace = pace, hm = hm, thousands = thousands,
+  pace = pace, hm = hm, thousands = thousands, trackXP = trackXP, sessionGet = sessionGet,
+  sessionSave = sessionSave, bump = bump, onDeath = onDeath, buildExport = buildExport, enc = enc,
+  migrate = migrate, bankBagIDs = bankBagIDs, store = store, lootQueue = lootQueue, lootReceived = lootReceived,
 }

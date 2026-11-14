@@ -10,6 +10,11 @@ on:
     branches: [main]
     tags: ["v*"]
 
+# Two quick pushes must not both tag and upload the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   version:
     runs-on: ubuntu-latest
@@ -76,7 +81,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           tag="${{ needs.version.outputs.tag }}"
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-            git checkout -q "${tag}"
+            # A tag left by an earlier failed run: release it only if it is this very commit,
+            # otherwise the zip would be built from old code.
+            tagged=$(git rev-list -n 1 "${tag}")
+            if [ "${tagged}" != "$(git rev-parse HEAD)" ]; then
+              echo "::error title=release::Tag ${tag} points to ${tagged}, not to HEAD $(git rev-parse HEAD). Delete the tag (git push --delete origin ${tag}) or raise the version in CHANGELOG.md, then push again."
+              exit 1
+            fi
           else
             git tag -a "${tag}" -m "LevelTrail ${tag}"
             git push origin "${tag}"

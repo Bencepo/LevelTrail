@@ -8,7 +8,7 @@ A World of Warcraft: Forever addon that records your leveling run. See it at **h
 - **Level splits**: when each level was reached and how much online time it took.
 - **XP sources**: XP from quests, kills and exploration, in total and per level. The rest shows as "other".
 - **Play sessions**: duration, XP and gold per session. Sessions older than the last 30 are summed up per month.
-- **Deaths**: when, where and at which level.
+- **Deaths**: when, where and at which level. Every death is counted per level and per zone; the export carries the details of the last 20.
 - **Gold and repairs**: gold per day (last 120 days) and repair costs.
 - **Pace**: XP per hour from your last five full levels and from the current session, and the online time still needed for the next level and for level 60.
 - **Zones**: online time, XP and deaths per zone.
@@ -17,9 +17,10 @@ A World of Warcraft: Forever addon that records your leveling run. See it at **h
 - **Dungeon runs**: time, XP, gold, kills, deaths and loot per dungeon or raid visit.
 - **Travel time**: time on flights and corpse runs.
 - **Library books** (WoW Forever): which of the 40 books are handed in and which reward quests (10, 20, 25 books) are done, read from the completed quests, so books handed in before the install count too.
+- **VendorFloor** (optional): with Bencepo's VendorFloor installed, its flip profit is part of the export.
 - **Several characters**: each character is kept separately.
 
-Snapshots are taken automatically on level-up, quest turn-in, zone change, gear and gold changes (at most one every two seconds).
+The character snapshot is rebuilt two seconds after a level-up or zone change, at logout and when the export opens. Frequent events (XP, loot, gold, bags, quests) only mark it as stale; it is then rebuilt at most once a minute.
 
 ## Getting the data out
 
@@ -30,7 +31,21 @@ The game also writes everything to `WTF\Account\<ACCOUNT>\SavedVariables\LevelTr
 
 ## Tracker window
 
-`/trail hud` turns a small window on or off: level progress, time on the current level, XP per hour (session and recent levels) and the time to the next level and to 60. Drag it anywhere; position and visibility are kept per character. `/trail help` lists all commands.
+`/trail hud` turns a small window on or off: level progress, time on the current level, XP per hour (session and recent levels) and the time to the next level and to the level cap. Drag it anywhere; position and visibility are kept per character.
+
+## Minimap button and commands
+
+The minimap button (also in the game's addon menu next to the minimap) opens the export with a left-click and turns the tracker window on or off with a right-click. `/trail minimap` hides or shows it.
+
+| Command | What it does |
+|---|---|
+| `/trail` or `/lt` | export window |
+| `/trail chat` | one-line summary in chat |
+| `/trail session` | the running play session |
+| `/trail hud` | tracker window on or off |
+| `/trail minimap` | minimap button on or off |
+| `/trail bug` | link for a bug report (also the "Report a bug" button in the export window) |
+| `/trail help` | list of commands |
 
 ## Web viewer
 

@@ -1,35 +1,19 @@
 # LevelTrail Roadmap
 
-Status as of 2026-11-11. Goal: the leveling tracker people install alongside Questie, used well beyond one character.
+Status as of 2026-11-14. Goal: the leveling tracker people install alongside Questie, used well beyond one character.
 
-## Now: 1.1.0-beta (released 2026-11-11, in testing)
+## Released
 
-- [x] Tracker window `/trail hud`: level progress, time on the level, XP per hour, time to the next level and to 60
-- [x] Pace in the export and in `/trail chat`
-- [x] Time, XP and deaths per zone
-- [x] Web viewer: XP per hour, time to 60, zones table
-- [x] VendorFloor profit in the export and the web viewer, gold per hour per session
-- [ ] Test in game: tracker window, pace after a few levels, zone times
-- [ ] Check the list of the 40 library book quests in game (count matches 10/40 so far)
-- [x] Release 1.1.0-beta on CurseForge
-- [ ] Release 1.1.0 (stable) after the in-game test
+- 1.0.0-beta to 1.3.6-beta: level splits, XP sources, sessions, deaths, gold, library books, tracker window, pace, zones, minimap button, dungeon runs, travel time, session recap, web viewer insights, own icon, Wago, automated tests and code checks
 
-## 1.2.0-beta (released)
+## Now: 1.4.0-beta
 
-- [x] Minimap button and addon menu entry
+- [x] Fixes from the code review of 2026-11-14 (GitHub issues #10 to #52): XP and sessions, dungeon visits, bank and reputation scans, web viewer safety and accuracy, release workflow
+- [x] "Report a bug" button in the export window, `/trail bug`
+- [ ] Test in game: sessions across a break, multi-level XP, dungeon corpse run, bank bags, reputation with collapsed headers, Report a bug window
+- [ ] Copy `web/index.html` to the site repo
 
-## Next: 1.3 (built, not released)
-
-- [x] Level times compared with your other characters (web viewer)
-- [x] Best zone for your level range, from your own XP per hour
-- [x] Session recap: kills, quests, deaths, loot value; `/trail session`
-- [x] Dungeon runs: time, XP, gold and loot per visit, compared with your usual pace
-- [x] Travel time: flights and corpse runs
-- [x] Web viewer: rested XP, quests, talents, gear, professions, reputation, death analysis
-- [ ] Test in game: dungeon detection, flight times, loot value, talent tree names
-- [ ] Release 1.3.0-beta
-
-## After 1.3
+## Next
 
 - [ ] Tracker options: lock position, scale, choose the lines, hide in combat
 - [ ] Leveling app: decide whether it is replaced by the web viewer (the old app artifact no longer exists)

@@ -8,7 +8,7 @@
 ## X-License: All Rights Reserved
 ## X-Curse-Project-ID: 1798692
 ## X-Wago-ID: n6VYm8Nd
-## SavedVariables: LevelTrailDB
+## SavedVariables: LevelTrailDB, LevelTrailSettings
 ## IconTexture: Interface\AddOns\LevelTrail\Icons\minimap
 ## AddonCompartmentFunc: LevelTrail_OnCompartmentClick
 ## OptionalDeps: VendorFloor

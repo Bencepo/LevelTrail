@@ -9,6 +9,7 @@ ignore = { "113", "212/self" }
 
 globals = {
 	"LevelTrailDB",
+	"LevelTrailSettings",
 	"SLASH_LEVELTRAIL1",
 	"SLASH_LEVELTRAIL2",
 	"SlashCmdList",
