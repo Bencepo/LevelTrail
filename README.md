@@ -45,6 +45,10 @@ See [ROADMAP.md](ROADMAP.md).
 - Online time is counted by the addon from its install on. A level the addon did not see from the start is marked as partial.
 - Nothing is sent anywhere: an addon can only write its SavedVariables file and show text.
 
+## Feedback and bug reports
+
+Found a bug or have an idea? [Open an issue](https://github.com/Bencepo/LevelTrail/issues/new/choose), it takes a minute. For bugs the Lua error text (from BugSack, or `/console scriptErrors 1`) and your LevelTrail version help the most. No GitHub account? Comment on [CurseForge](https://www.curseforge.com/wow/addons/leveltrail#comments). Every report gets read.
+
 ## More addons by Bencepo
 
 All addons, live demos and the web pages: **https://bencepo.github.io**
