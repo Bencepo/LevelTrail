@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.1
+
+- Fixed a Lua error ("attempt to index local 'msg' (a secret string value)") when the game hands protected chat messages to the addon, e.g. on zone discovery. Such messages are now skipped.
+
 ## 1.5.0
 
 - Tracker options in their own window (`/trail options`, or shift-click the minimap button): lock the position so clicks go through, hide in combat, size, background opacity and which lines to show. The window can stay open while you play, every change shows at once.

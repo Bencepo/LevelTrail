@@ -182,9 +182,16 @@ end
 local KILL_PATTERN = toPattern(COMBATLOG_XPGAIN_FIRSTPERSON)
 local EXPLORE_PATTERN = toPattern(ERR_ZONE_EXPLORED_XP)
 
+-- chat payloads can be secret values (restricted contexts); never touch them
+local function isSecret(v)
+  return issecretvalue ~= nil and issecretvalue(v) == true
+end
+
 local function numberIn(msg, pattern)
-  if not (msg and pattern) then return nil end
-  local captures = { msg:match(pattern) }
+  if not pattern or type(msg) ~= "string" or isSecret(msg) then return nil end
+  local ok, a, b, c, d = pcall(string.match, msg, pattern)
+  if not ok then return nil end
+  local captures = { a, b, c, d }
   for _, c in ipairs(captures) do
     local n = tonumber(c)
     if n then return n end
@@ -230,7 +237,7 @@ end
 local LOOT_MULTI = toPattern(LOOT_ITEM_SELF_MULTIPLE)
 local LOOT_SINGLE = toPattern(LOOT_ITEM_SELF)
 local function lootValue(msg)
-  if type(msg) ~= "string" then return 0 end
+  if type(msg) ~= "string" or isSecret(msg) then return 0 end
   local link, count
   if LOOT_MULTI then link, count = msg:match(LOOT_MULTI) end
   if not link and LOOT_SINGLE then link = msg:match(LOOT_SINGLE) end

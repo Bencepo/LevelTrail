@@ -35,6 +35,14 @@ describe("LevelTrail", function()
 			local p = T.toPattern("%d%% rested bonus for %s")
 			assert.equal(50, T.numberIn("50% rested bonus for you", p))
 		end)
+		it("skips secret chat values", function()
+			local p = T.toPattern(env.COMBATLOG_XPGAIN_FIRSTPERSON)
+			local msg = "Kobold Miner dies, you gain 85 experience."
+			env.issecretvalue = function(v) return v == msg end
+			assert.is_nil(T.numberIn(msg, p))
+			assert.equal(0, T.lootValue(msg))
+			env.issecretvalue = nil
+		end)
 		it("values looted items at their vendor price", function()
 			env.items[2589] = { name = "Linen Cloth", sell = 13 }
 			local link = "|cffffffff|Hitem:2589::::::::|h[Linen Cloth]|h|r"
