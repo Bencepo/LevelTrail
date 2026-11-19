@@ -11,7 +11,7 @@ Status as of 2026-11-14. Goal: the leveling tracker people install alongside Que
 - [x] Fixes from the code review of 2026-11-14 (GitHub issues #10 to #52): XP and sessions, dungeon visits, bank and reputation scans, web viewer safety and accuracy, release workflow
 - [x] "Report a bug" button in the export window, `/trail bug`
 - [ ] Test in game: sessions across a break, multi-level XP, dungeon corpse run, bank bags, reputation with collapsed headers, Report a bug window
-- [ ] Copy `web/index.html` to the site repo
+- [x] Copy `web/index.html` to the site repo
 
 ## Next
 
