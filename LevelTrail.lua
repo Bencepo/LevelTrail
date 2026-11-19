@@ -1643,38 +1643,69 @@ end
 
 ---------------------------------------------------------------- tracker window (/trail hud)
 -- A small movable window with the running level, XP per hour and the time to the next
--- level and the cap. Whether it is shown is kept per character.
+-- level and the cap. Whether it is shown and where it sits are kept per character; its
+-- look (lines, size, background, lock, hide in combat) is kept for the account.
 local hud
-local function hudLines()
+local HUD_LINES = {
+  { key = "level", label = "Level and progress" },
+  { key = "onLevel", label = "Time on this level" },
+  { key = "session", label = "Play session" },
+  { key = "pace", label = "Pace (XP per hour)" },
+  { key = "next", label = "Time to the next level" },
+  { key = "cap", label = "Time to the level cap" },
+}
+local HUD_DEFAULTS = { scale = 1, alpha = 0.6, locked = false, hideInCombat = false, lines = {} }
+
+local function hudSettings()
+  LevelTrailSettings = type(LevelTrailSettings) == "table" and LevelTrailSettings or {}
+  local t = type(LevelTrailSettings.tracker) == "table" and LevelTrailSettings.tracker or {}
+  LevelTrailSettings.tracker = t
+  for k, v in pairs(HUD_DEFAULTS) do
+    if t[k] == nil then t[k] = type(v) == "table" and {} or v end
+  end
+  return t
+end
+
+-- Every line is on unless switched off, so lines added later show up by default.
+local function lineOn(key)
+  return hudSettings().lines[key] ~= false
+end
+
+-- all = true for the minimap tooltip, which always shows every line.
+local function hudLines(all)
   local s = store()
   local p = pace(s)
   local lines = {}
+  local function add(key, text)
+    if all or lineOn(key) then lines[#lines + 1] = text end
+  end
   local xp, xpMax = UnitXP("player") or 0, UnitXPMax("player") or 0
   if p.atCap then
-    lines[1] = ("Level %d, the cap"):format(p.level)
+    add("level", ("Level %d, the cap"):format(p.level))
   else
-    lines[1] = ("Level %d  %d%%"):format(p.level, xpMax > 0 and math.floor(xp / xpMax * 100) or 0)
+    add("level", ("Level %d  %d%%"):format(p.level, xpMax > 0 and math.floor(xp / xpMax * 100) or 0))
   end
   local since = s.levelSince
   if since and since.level == p.level and s.online and since.online then
-    lines[#lines + 1] = "On this level: " .. hm(s.online - since.online) .. (since.partial and " (since install)" or "")
+    add("onLevel", "On this level: " .. hm(s.online - since.online) .. (since.partial and " (since install)" or ""))
   end
   if p.sessionXpPerHour then
-    lines[#lines + 1] = "Session: " .. thousands(p.sessionXpPerHour) .. " XP/h, " .. hm((p.sessionMinutes or 0) * 60)
+    add("session", "Session: " .. thousands(p.sessionXpPerHour) .. " XP/h, " .. hm((p.sessionMinutes or 0) * 60))
   elseif p.sessionMinutes then
-    lines[#lines + 1] = "Session: " .. hm(p.sessionMinutes * 60)
+    add("session", "Session: " .. hm(p.sessionMinutes * 60))
   end
   if p.xpPerHour then
-    lines[#lines + 1] = "Pace: " .. thousands(p.xpPerHour) .. " XP/h (last " .. (p.levelsUsed or 0) .. " levels)"
+    add("pace", "Pace: " .. thousands(p.xpPerHour) .. " XP/h (last " .. (p.levelsUsed or 0) .. " levels)")
   end
   if not p.atCap then
     if p.secToNext then
-      lines[#lines + 1] = "Next level: " .. hm(p.secToNext)
-      lines[#lines + 1] = ("Level %d: %s online"):format(p.maxLevel, hm(p.secToCap))
+      add("next", "Next level: " .. hm(p.secToNext))
+      add("cap", ("Level %d: %s online"):format(p.maxLevel, hm(p.secToCap)))
     else
-      lines[#lines + 1] = "Time to level: after the first full level"
+      add("next", "Time to level: after the first full level")
     end
   end
+  if #lines == 0 then lines[1] = "LevelTrail: no lines chosen" end
   return table.concat(lines, "\n")
 end
 
@@ -1684,6 +1715,40 @@ local function hudUpdate()
     hud.text:SetText(ok and text or "LevelTrail: " .. tostring(text))
     hud:SetHeight(hud.text:GetStringHeight() + 16)
   end
+end
+
+local function hudApplyLook()
+  if not hud then return end
+  local t = hudSettings()
+  hud:SetScale(t.scale)
+  if hud.SetBackdropColor then
+    hud:SetBackdropColor(0, 0, 0, t.alpha)
+    hud:SetBackdropBorderColor(1, 1, 1, t.alpha > 0 and 1 or 0)
+  end
+  -- locked: clicks go through to the game world
+  hud:EnableMouse(not t.locked)
+  hudUpdate()
+end
+
+local inCombat = false
+-- Shown when the character wants it and it is not hidden for combat.
+local function hudRefreshShown()
+  local st = store().hud
+  local want = st and st.shown and not (inCombat and hudSettings().hideInCombat)
+  if want then
+    if not hud then return end
+    hud:Show()
+    hudUpdate()
+  elseif hud then
+    hud:Hide()
+  end
+end
+
+local function hudSavePosition()
+  local point, _, rel, x, y = hud:GetPoint()
+  local st = store()
+  st.hud = st.hud or {}
+  st.hud.point, st.hud.rel, st.hud.x, st.hud.y = point, rel, x, y
 end
 
 local function hudCreate()
@@ -1699,10 +1764,8 @@ local function hudCreate()
   win:SetScript("OnDragStart", win.StartMoving)
   win:SetScript("OnDragStop", function(self)
     self:StopMovingOrSizing()
-    local point, _, rel, x, y = self:GetPoint()
-    local st = store()
-    st.hud = st.hud or {}
-    st.hud.point, st.hud.rel, st.hud.x, st.hud.y = point, rel, x, y
+    hud = self
+    hudSavePosition()
   end)
   if win.SetBackdrop then
     win:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -1725,6 +1788,7 @@ local function hudCreate()
     if acc >= 2 then acc = 0; hudUpdate() end
   end)
   hud = win
+  hudApplyLook()
   return win
 end
 
@@ -1732,19 +1796,72 @@ local function hudShow(show)
   local st = store()
   st.hud = st.hud or {}
   st.hud.shown = show and true or false
-  if show then
-    hudCreate():Show()
-    hudUpdate()
-  elseif hud then
-    hud:Hide()
+  if show then hudCreate() end
+  hudRefreshShown()
+end
+
+local function hudResetPosition()
+  local st = store()
+  st.hud = st.hud or {}
+  st.hud.point, st.hud.rel, st.hud.x, st.hud.y = nil, nil, nil, nil
+  if hud then
+    hud:ClearAllPoints()
+    hud:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -220, -200)
   end
+end
+
+---------------------------------------------------------------- tracker options window (/trail options)
+-- Its own window, dragged anywhere and left open while playing, so every change shows at once.
+local optionsWin
+local function showOptions()
+  if optionsWin then optionsWin:Toggle(); return end
+  local UI = LibStub and LibStub("BencepoUI-1.0", true)
+  if not UI then
+    print("|cffff5555LevelTrail:|r the options window did not load. /trail hud still turns the tracker on and off.")
+    return
+  end
+  local t = hudSettings()
+  local db = LevelTrailSettings
+  local win = UI:CreateWindow({ name = "LevelTrailOptions", title = "LevelTrail tracker",
+    width = 440, height = 290, accent = { 0.498, 0.749, 0.247, 1 }, db = db, posKey = "optPos",
+    bugUrl = BUG_URL })
+  local L, R = 16, 236
+  win:Header(L, -48, "Window")
+  win:Check(L, -72, "Show tracker", "The small window with level, pace and time to the next level. Saved per character.",
+    function() local st = store().hud; return st and st.shown end, function(v) hudShow(v) end)
+  win:Check(L, -96, "Lock position", "The tracker cannot be dragged, and clicks go through it to the game.",
+    function() return t.locked end, function(v) t.locked = v; hudApplyLook() end)
+  win:Check(L, -120, "Hide in combat", "Hides the tracker while you are in combat.",
+    function() return t.hideInCombat end, function(v) t.hideInCombat = v; hudRefreshShown() end)
+  win:Slider(L, -154, "Size", 50, 200, 10, function() return math.floor(t.scale * 100 + 0.5) end,
+    function(v) t.scale = v / 100; hudApplyLook() end, "Scale of the tracker.", 150, function(v) return v .. "%" end)
+  win:Slider(L, -200, "Background", 0, 100, 10, function() return math.floor(t.alpha * 100 + 0.5) end,
+    function(v) t.alpha = v / 100; hudApplyLook() end, "Opacity of the background. 0% shows only the text.", 150,
+    function(v) return v .. "%" end)
+  local reset = win:Button("Reset position", 130, function() hudResetPosition() end,
+    "Puts the tracker back to its starting place at the top right.")
+  reset:SetPoint("TOPLEFT", L, -252)
+  win:Header(R, -48, "Lines")
+  for i, line in ipairs(HUD_LINES) do
+    win:Check(R, -48 - i * 24, line.label, "Show this line in the tracker.",
+      function() return lineOn(line.key) end, function(v) t.lines[line.key] = v; hudUpdate() end)
+  end
+  optionsWin = win
+  win:Show()
 end
 
 local hudEvents = CreateFrame("Frame")
 hudEvents:RegisterEvent("PLAYER_LOGIN")
-hudEvents:SetScript("OnEvent", function()
-  local st = store().hud
-  if st and st.shown then pcall(hudShow, true) end
+hudEvents:RegisterEvent("PLAYER_REGEN_DISABLED")
+hudEvents:RegisterEvent("PLAYER_REGEN_ENABLED")
+hudEvents:SetScript("OnEvent", function(_, event)
+  if event == "PLAYER_LOGIN" then
+    local st = store().hud
+    if st and st.shown then pcall(hudShow, true) end
+  else
+    inCombat = event == "PLAYER_REGEN_DISABLED"
+    if hudSettings().hideInCombat then pcall(hudRefreshShown) end
+  end
 end)
 
 ---------------------------------------------------------------- minimap button
@@ -1767,7 +1884,9 @@ end
 local minimapButton
 
 local function minimapClick(button)
-  if button == "RightButton" then
+  if IsShiftKeyDown and IsShiftKeyDown() then
+    showOptions()
+  elseif button == "RightButton" then
     local okH, errH = pcall(hudShow, not (hud and hud:IsShown()))
     if not okH then print("|cffff5555LevelTrail: tracker failed:|r " .. tostring(errH)) end
   else
@@ -1777,13 +1896,14 @@ end
 
 local function minimapTooltip(tip)
   tip:AddLine(TITLE)
-  local ok, text = pcall(hudLines)
+  local ok, text = pcall(hudLines, true)
   if ok and text then
     for line in text:gmatch("[^\n]+") do tip:AddLine(line, 1, 1, 1) end
   end
   tip:AddLine(" ")
   tip:AddLine("Left-click: export for bencepo.github.io/leveltrail", 0.6, 0.8, 1)
   tip:AddLine("Right-click: tracker window on/off", 0.6, 0.8, 1)
+  tip:AddLine("Shift-click: tracker options", 0.6, 0.8, 1)
   tip:AddLine("Drag: move. /trail minimap: hide or show", 0.6, 0.8, 1)
 end
 
@@ -1830,6 +1950,10 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
     local okH, errH = pcall(hudShow, on)
     if not okH then print("|cffff5555LevelTrail: tracker failed:|r " .. tostring(errH)) end
     return
+  elseif msg == "options" or msg == "config" then
+    local okO, errO = pcall(showOptions)
+    if not okO then print("|cffff5555LevelTrail: options failed:|r " .. tostring(errO)) end
+    return
   elseif msg == "minimap" then
     if not minimapButton then
       print("|cffff5555LevelTrail:|r there is no minimap button (LibDBIcon did not load). Use /trail or the addon menu.")
@@ -1857,7 +1981,7 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
       GetCoinTextureString and GetCoinTextureString(cur.loot or 0) or tostring(cur.loot or 0)))
     return
   elseif msg == "help" then
-    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail session: this session so far, /trail hud: tracker window on/off, /trail minimap: minimap button on/off, /trail bug: report a bug")
+    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail session: this session so far, /trail hud: tracker window on/off, /trail options: tracker options, /trail minimap: minimap button on/off, /trail bug: report a bug")
     return
   end
   -- export and chat summary: refresh the parts that only load with their window open, then everything

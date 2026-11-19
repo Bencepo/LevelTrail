@@ -15,7 +15,7 @@ Status as of 2026-11-14. Goal: the leveling tracker people install alongside Que
 
 ## Next
 
-- [ ] Tracker options: lock position, scale, choose the lines, hide in combat
+- [x] Tracker options: lock position, scale, choose the lines, hide in combat (1.5.0)
 - [ ] Leveling app: decide whether it is replaced by the web viewer (the old app artifact no longer exists)
 - [ ] German texts in game (deDE), the rest stays English
 
@@ -24,7 +24,7 @@ Status as of 2026-11-14. Goal: the leveling tracker people install alongside Que
 - [ ] Support further Classic clients (Classic Era, Hardcore, Season of Discovery) to reach more players
 - [ ] Web viewer: compare characters side by side, share card with pace and zones
 - [ ] Session recap in chat on logout
-- [ ] Stable 1.x release on CurseForge and Wago
+- [x] Stable 1.x release on CurseForge and Wago (1.5.0)
 
 ## Maintenance (ongoing)
 

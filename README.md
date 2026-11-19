@@ -33,9 +33,11 @@ The game also writes everything to `WTF\Account\<ACCOUNT>\SavedVariables\LevelTr
 
 `/trail hud` turns a small window on or off: level progress, time on the current level, XP per hour (session and recent levels) and the time to the next level and to the level cap. Drag it anywhere; position and visibility are kept per character.
 
+`/trail options` (or shift-click the minimap button) opens the tracker options in their own window: lock the position (clicks then go through), hide it in combat, size, background opacity, and which lines to show. Every change shows at once.
+
 ## Minimap button and commands
 
-The minimap button (also in the game's addon menu next to the minimap) opens the export with a left-click and turns the tracker window on or off with a right-click. `/trail minimap` hides or shows it.
+The minimap button (also in the game's addon menu next to the minimap) opens the export with a left-click and turns the tracker window on or off with a right-click; shift-click opens the tracker options. `/trail minimap` hides or shows it.
 
 | Command | What it does |
 |---|---|
@@ -43,6 +45,7 @@ The minimap button (also in the game's addon menu next to the minimap) opens the
 | `/trail chat` | one-line summary in chat |
 | `/trail session` | the running play session |
 | `/trail hud` | tracker window on or off |
+| `/trail options` | tracker options window |
 | `/trail minimap` | minimap button on or off |
 | `/trail bug` | link for a bug report (also the "Report a bug" button in the export window) |
 | `/trail help` | list of commands |
