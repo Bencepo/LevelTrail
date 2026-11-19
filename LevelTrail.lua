@@ -189,9 +189,9 @@ end
 
 local function numberIn(msg, pattern)
   if not pattern or type(msg) ~= "string" or isSecret(msg) then return nil end
-  local ok, a, b, c, d = pcall(string.match, msg, pattern)
+  local ok, m1, m2, m3, m4 = pcall(string.match, msg, pattern)
   if not ok then return nil end
-  local captures = { a, b, c, d }
+  local captures = { m1, m2, m3, m4 }
   for _, c in ipairs(captures) do
     local n = tonumber(c)
     if n then return n end
