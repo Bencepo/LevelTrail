@@ -1,16 +1,16 @@
 # LevelTrail Roadmap
 
-Status as of 2026-11-14. Goal: the leveling tracker people install alongside Questie, used well beyond one character.
+Status as of 2026-11-20. Goal: the leveling tracker people install alongside Questie, used well beyond one character.
 
 ## Released
 
 - 1.0.0-beta to 1.3.6-beta: level splits, XP sources, sessions, deaths, gold, library books, tracker window, pace, zones, minimap button, dungeon runs, travel time, session recap, web viewer insights, own icon, Wago, automated tests and code checks
 
-## Now: 1.4.0-beta
+## Done: 1.4.0-beta
 
 - [x] Fixes from the code review of 2026-11-14 (GitHub issues #10 to #52): XP and sessions, dungeon visits, bank and reputation scans, web viewer safety and accuracy, release workflow
 - [x] "Report a bug" button in the export window, `/trail bug`
-- [ ] Test in game: sessions across a break, multi-level XP, dungeon corpse run, bank bags, reputation with collapsed headers, Report a bug window
+- [x] Test in game: sessions across a break, multi-level XP, dungeon corpse run, bank bags, reputation with collapsed headers, Report a bug window
 - [x] Copy `web/index.html` to the site repo
 
 ## Next
