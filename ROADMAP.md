@@ -17,7 +17,7 @@ Status as of 2026-11-14. Goal: the leveling tracker people install alongside Que
 
 - [x] Tracker options: lock position, scale, choose the lines, hide in combat (1.5.0)
 - [ ] Leveling app: decide whether it is replaced by the web viewer (the old app artifact no longer exists)
-- [ ] German texts in game (deDE), the rest stays English
+- UI stays English only, no translations (decided Nov 2026)
 
 ## Later
 

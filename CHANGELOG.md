@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.2
+
+- New icon in the addon list and on the minimap button, part of the new Bencepo logo family.
+
 ## 1.5.1
 
 - Fixed a Lua error ("attempt to index local 'msg' (a secret string value)") when the game hands protected chat messages to the addon, e.g. on zone discovery. Such messages are now skipped.
