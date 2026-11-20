@@ -5,6 +5,7 @@ ignore:
   - .pkgmeta
   - "*.md"
   - .luacheckrc
+  - media
   - .luarc.json
   - web
   - tests
