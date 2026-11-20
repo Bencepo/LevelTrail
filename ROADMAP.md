@@ -16,7 +16,7 @@ Status as of 2026-11-20. Goal: the leveling tracker people install alongside Que
 ## Next
 
 - [x] Tracker options: lock position, scale, choose the lines, hide in combat (1.5.0)
-- [ ] Leveling app: decide whether it is replaced by the web viewer (the old app artifact no longer exists)
+- [x] Leveling app dropped: the web viewer at bencepo.github.io/leveltrail is the app (decided Nov 2026)
 - UI stays English only, no translations (decided Nov 2026)
 
 ## Later
