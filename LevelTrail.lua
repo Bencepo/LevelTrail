@@ -713,11 +713,17 @@ local function scanRecipes()
     or try(C_TradeSkillUI.IsNPCCrafting) or try(IsTradeSkillLinked) then return end
   local ids = try(C_TradeSkillUI.GetAllRecipeIDs)
   if type(ids) ~= "table" or #ids == 0 then return end
-  local profName = "?"
+  -- the name can come back empty (window closed or still loading): then nothing is saved,
+  -- otherwise the last profession would be stored a second time under ""
+  local profName
   if C_TradeSkillUI.GetBaseProfessionInfo then
     local info = try(C_TradeSkillUI.GetBaseProfessionInfo)
-    if type(info) == "table" and info.professionName then profName = info.professionName end
+    if type(info) == "table" then profName = info.parentProfessionName or info.professionName end
   end
+  if (not profName or profName == "") and GetTradeSkillLine then
+    profName = (try(GetTradeSkillLine))
+  end
+  if type(profName) ~= "string" or profName == "" or profName == "UNKNOWN" then return end
   local known, unknown = {}, {}
   for _, id in ipairs(ids) do
     local info = try(C_TradeSkillUI.GetRecipeInfo, id)
@@ -1297,6 +1303,8 @@ end
 ---------------------------------------------------------------- data from older versions
 local function migrate()
   local s = store()
+  -- recipes saved without a profession name (before 1.5.4) are copies of another profession
+  if s.recipes then s.recipes[""], s.recipes["?"] = nil, nil end
   -- XP tracking moved out of the session (1.4)
   if not s.xpTrack then
     local cur = s.session
