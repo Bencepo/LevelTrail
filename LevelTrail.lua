@@ -1948,6 +1948,27 @@ local function count(t)
   return n
 end
 
+-- Other records of this character name (the realm text changed, e.g. "?" before the game knew it).
+local function otherRecords()
+  local key, name = charKey()
+  local list = {}
+  for k, rec in pairs(LevelTrailDB or {}) do
+    if k ~= key and type(rec) == "table" and rec.name == name then list[#list + 1] = { key = k, rec = rec } end
+  end
+  table.sort(list, function(a, b) return (a.rec.ts or 0) < (b.rec.ts or 0) end)
+  return list
+end
+
+local function exportRecord(rec, summary)
+  local okE, data = pcall(buildExport, rec)
+  if not okE then print("|cffff5555LevelTrail: export failed:|r " .. tostring(data)) return end
+  local out = {}
+  local okJ, err = pcall(enc, data, out)
+  if not okJ then print("|cffff5555LevelTrail: encoding failed:|r " .. tostring(err)) return end
+  local okS, err2 = pcall(showExport, table.concat(out), summary)
+  if not okS then print("|cffff5555LevelTrail: window failed:|r " .. tostring(err2)) end
+end
+
 SLASH_LEVELTRAIL1 = "/trail"
 SLASH_LEVELTRAIL2 = "/lt"
 SlashCmdList["LEVELTRAIL"] = function(msg)
@@ -1987,8 +2008,17 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
       thousands(cur.xpGained), cur.kills or 0, cur.quests or 0, cur.deaths or 0,
       GetCoinTextureString and GetCoinTextureString(cur.loot or 0) or tostring(cur.loot or 0)))
     return
+  elseif msg:match("^old") then
+    local list = otherRecords()
+    if #list == 0 then print("|cff7fbf3fLevelTrail:|r no other record of this character.") return end
+    local i = tonumber(msg:match("^old%s*(%d+)")) or 1
+    local o = list[i]
+    if not o then print("|cff7fbf3fLevelTrail:|r there are " .. #list .. " older records: /trail old 1 to /trail old " .. #list .. ".") return end
+    exportRecord(o.rec, "Older record " .. i .. "/" .. #list .. " (" .. tostring(o.key) .. "), level " .. tostring(o.rec.level) ..
+      ", " .. tostring(o.rec.date) .. ". Paste it into the web viewer: it is added to this character's history.")
+    return
   elseif msg == "help" then
-    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail session: this session so far, /trail hud: tracker window on/off, /trail options: tracker options, /trail minimap: minimap button on/off, /trail bug: report a bug")
+    print("|cff7fbf3f" .. TITLE .. "|r /trail: export window, /trail chat: summary in chat, /trail session: this session so far, /trail hud: tracker window on/off, /trail options: tracker options, /trail minimap: minimap button on/off, /trail bug: report a bug, /trail old: export an older record of this character")
     return
   end
   -- export and chat summary: refresh the parts that only load with their window open, then everything
@@ -2024,6 +2054,9 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
   if not okS then
     print("|cffff5555LevelTrail: window failed:|r " .. tostring(err2))
     print("|cff7fbf3f" .. TITLE .. "|r " .. summary .. " (type /reload to write the file instead)")
+  end  local others = otherRecords()
+  if #others > 0 then
+    print("|cff7fbf3fLevelTrail:|r " .. #others .. " older record(s) of this character found. Type /trail old to export them for the web viewer.")
   end
 end
 
