@@ -69,10 +69,114 @@ local function lastBagID()
   return NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or 4
 end
 
+-- Some clients return an empty realm name (seen on WoW Forever in Nov 2026). The record then
+-- stays under the realm this character already has a record for, instead of starting a new one.
+local knownRealm
 local function charKey()
   local name = UnitName("player") or "?"
   local realm = GetRealmName and GetRealmName() or "?"
+  if realm == "" then
+    if not knownRealm then
+      local best
+      for _, rec in pairs(LevelTrailDB or {}) do
+        if type(rec) == "table" and rec.name == name and type(rec.realm) == "string" and rec.realm ~= ""
+          and (not best or (rec.ts or 0) > (best.ts or 0)) then best = rec end
+      end
+      knownRealm = best and best.realm or nil
+    end
+    realm = knownRealm or realm
+  else
+    knownRealm = realm
+  end
   return name .. "-" .. realm, name, realm
+end
+
+-- Adds the history of an older record (src) to the newer one (dst). Snapshot values (level,
+-- bags, gear, quests...) stay as in dst; counters are added up, lists are joined.
+local function addNumbers(dst, src)
+  for k, v in pairs(src) do
+    if type(v) == "number" and (dst[k] == nil or type(dst[k]) == "number") then
+      dst[k] = (dst[k] or 0) + v
+    elseif type(v) == "table" then
+      if type(dst[k]) ~= "table" then dst[k] = {} end
+      addNumbers(dst[k], v)
+    elseif dst[k] == nil then
+      dst[k] = v
+    end
+  end
+end
+
+local function mergeRecord(dst, src)
+  local off = src.online or 0
+  dst.online = (dst.online or 0) + off
+  if dst.levelSince then dst.levelSince.online = (dst.levelSince.online or 0) + off end
+  local byLevel = {}
+  for _, sp in ipairs(src.splits or {}) do if sp.level then byLevel[sp.level] = sp end end
+  for _, sp in ipairs(dst.splits or {}) do
+    if sp.online then sp.online = sp.online + off end
+    if sp.level then byLevel[sp.level] = sp end
+  end
+  local splits = {}
+  for _, sp in pairs(byLevel) do splits[#splits + 1] = sp end
+  table.sort(splits, function(a, b) return a.level < b.level end)
+  dst.splits = splits
+  local function join(key, limit)
+    local list = {}
+    for _, x in ipairs(src[key] or {}) do list[#list + 1] = x end
+    for _, x in ipairs(dst[key] or {}) do list[#list + 1] = x end
+    while limit and #list > limit do table.remove(list, 1) end
+    if #list > 0 then dst[key] = list end
+  end
+  dst.deathCount = (dst.deathCount or #(dst.deaths or {})) + (src.deathCount or #(src.deaths or {}))
+  join("deaths"); join("sessions"); join("dungeons", 50)
+  for _, key in ipairs({ "deathsByLevel", "sessionMonths", "zoneLevels", "xpSources", "travel", "questsByLevel" }) do
+    if type(src[key]) == "table" then
+      dst[key] = type(dst[key]) == "table" and dst[key] or {}
+      addNumbers(dst[key], src[key])
+    end
+  end
+  for zone, z in pairs(src.zones or {}) do
+    dst.zones = dst.zones or {}
+    local d = dst.zones[zone]
+    if not d then dst.zones[zone] = z else
+      d.time, d.xp, d.deaths = (d.time or 0) + (z.time or 0), (d.xp or 0) + (z.xp or 0), (d.deaths or 0) + (z.deaths or 0)
+      if z.first and (not d.first or z.first < d.first) then d.first = z.first end
+      if z.last and (not d.last or z.last > d.last) then d.last = z.last end
+    end
+  end
+  if src.repairs then
+    dst.repairs = dst.repairs or { total = 0, count = 0 }
+    dst.repairs.total = (dst.repairs.total or 0) + (src.repairs.total or 0)
+    dst.repairs.count = (dst.repairs.count or 0) + (src.repairs.count or 0)
+    dst.repairs.last = dst.repairs.last or src.repairs.last
+  end
+  for day, c in pairs(src.goldDays or {}) do
+    dst.goldDays = dst.goldDays or {}
+    if dst.goldDays[day] == nil then dst.goldDays[day] = c end
+  end
+  if src.firstLevel and (not dst.firstLevel or src.firstLevel < dst.firstLevel) then dst.firstLevel = src.firstLevel end
+  -- anything only the older record has (tracker position, bank...) is kept
+  for k, v in pairs(src) do if dst[k] == nil then dst[k] = v end end
+end
+
+-- Records of this character saved under an empty realm name go into the record of its realm.
+local function mergeEmptyRealm()
+  local key, name, realm = charKey()
+  if realm == "" or realm == "?" then return end
+  local loose = LevelTrailDB[name .. "-"]
+  if type(loose) ~= "table" or loose == LevelTrailDB[key] then return end
+  local main = LevelTrailDB[key]
+  if type(main) ~= "table" then
+    loose.realm = realm
+    LevelTrailDB[key] = loose
+  elseif (loose.ts or 0) >= (main.ts or 0) then
+    mergeRecord(loose, main)
+    loose.realm = realm
+    LevelTrailDB[key] = loose
+  else
+    mergeRecord(main, loose)
+  end
+  LevelTrailDB[name .. "-"] = nil
 end
 
 local function store()
@@ -1239,6 +1343,7 @@ local function soon(fn)
 end
 f:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
+    pcall(mergeEmptyRealm)
     pcall(migrate)
     pcall(snapshot)
     clockZone = currentZone()
@@ -2064,6 +2169,6 @@ end
 ns.test = {
   toPattern = toPattern, numberIn = numberIn, lootValue = lootValue, xpForLevel = xpForLevel,
   pace = pace, hm = hm, thousands = thousands, trackXP = trackXP, sessionGet = sessionGet,
-  sessionSave = sessionSave, bump = bump, onDeath = onDeath, buildExport = buildExport, enc = enc,
+  sessionSave = sessionSave, bump = bump, onDeath = onDeath, buildExport = buildExport, enc = enc, mergeEmptyRealm = mergeEmptyRealm, charKey = charKey,
   migrate = migrate, bankBagIDs = bankBagIDs, store = store, lootQueue = lootQueue, lootReceived = lootReceived,
 }
