@@ -4,7 +4,7 @@
 
 - Text alignment for the tracker window: left, centre or right (settings).
 - Each tracker line can be moved up or down and has its own text size (settings, Lines). "Default lines" puts all lines back.
-- The tracker window can be placed in the game's Edit Mode: it shows there (blue, with its name) even when hidden or locked, snaps to the screen centre and, with Edit Mode's "Snap" on, to its grid. It hangs from its top edge, so larger lines make it grow downwards.
+- The tracker window can be placed in the game's Edit Mode: it shows there (blue, with its name) even when hidden or locked, snaps to the screen centre and, with Edit Mode's "Snap" on, to its grid. It keeps the edge it snapped to: snapped with its bottom edge, it grows and shrinks from the top when lines are switched on or off or change size; otherwise it hangs from its top edge.
 - The minimap button opens the settings with a left-click, like the other Bencepo addons. Right-click opens the export for the web viewer, shift-click turns the tracker window on or off.
 - The settings window has a "Minimap button" switch and an "Export" button; hiding the minimap button no longer needs a chat command.
 - "Report a bug" uses the same link popup as the other Bencepo addons.

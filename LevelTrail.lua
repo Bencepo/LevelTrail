@@ -1909,40 +1909,86 @@ local function hudSavePosition()
   st.hud.point, st.hud.rel, st.hud.x, st.hud.y = point, rel, x, y
 end
 
--- Edit Mode's grid, when its "Snap" is on: spacing in UIParent units, or nil.
-local function editModeGrid()
+-- Edit Mode's "Snap" setting (snap to elements), and the frames it places.
+local function editModeSnapOn()
   local m = EditModeManagerFrame
-  if not m then return nil end
-  local okS, snap = pcall(function() return m.IsSnapEnabled and m:IsSnapEnabled() end)
-  if not (okS and snap) then return nil end
-  local okG, spacing = pcall(function()
-    return (m.Grid and m.Grid.gridSpacing) or (m.GetGridSpacing and m:GetGridSpacing())
-  end)
-  spacing = okG and tonumber(spacing)
-  return spacing and spacing > 0 and spacing or nil
+  if not (m and m.IsSnapEnabled) then return false end
+  local ok, on = pcall(m.IsSnapEnabled, m)
+  return ok and on and true or false
 end
 
--- After a drag: the tracker hangs from its top centre, so larger lines grow it downwards.
--- In Edit Mode it snaps to the screen centre line and, with "Snap" on, to the grid.
-local SNAP_CENTER = 10 -- pixels from the screen centre that snap onto it
-local function hudPlace()
-  local left, right, top = hud:GetLeft(), hud:GetRight(), hud:GetTop()
-  if not (left and right and top) then return end
-  local x, y = (left + right) / 2, top
-  if editMode then
-    -- grid and screen in the tracker's own scale
-    local k = UIParent:GetEffectiveScale() / hud:GetEffectiveScale()
-    local midX, midY = UIParent:GetWidth() * k / 2, UIParent:GetHeight() * k / 2
-    local grid = editModeGrid()
-    if grid then
-      grid = grid * k
-      x = midX + math.floor((x - midX) / grid + 0.5) * grid
-      y = midY + math.floor((y - midY) / grid + 0.5) * grid
+local function editModeFrames()
+  local m = EditModeManagerFrame
+  local list = m and m.registeredSystemFrames
+  return type(list) == "table" and list or {}
+end
+
+-- Rectangle of a frame in the tracker's coordinates: left, right, bottom, top.
+local function rectIn(frame)
+  local ok, l, r, b, t = pcall(function()
+    if not (frame and frame:IsVisible()) then return nil end
+    local l, r, b, t = frame:GetLeft(), frame:GetRight(), frame:GetBottom(), frame:GetTop()
+    if not (l and r and b and t) then return nil end
+    local k = frame:GetEffectiveScale() / hud:GetEffectiveScale()
+    return l * k, r * k, b * k, t * k
+  end)
+  if ok and l then return l, r, b, t end
+  return nil
+end
+
+-- With "Snap" on in Edit Mode, the tracker snaps flush to the edges and centres of the
+-- game's other Edit Mode frames, to the screen edges and to the screen centre lines.
+-- Without it, it stays exactly where it is dropped.
+local SNAP_RANGE = 12 -- pixels (screen) within which an edge snaps
+-- The shift that puts the nearest of edges onto a target, and which edge that was (index).
+local function snapOffset(edges, targets, range)
+  local best, which
+  for i, e in ipairs(edges) do
+    for _, tv in ipairs(targets) do
+      local d = tv - e
+      if math.abs(d) <= range and (not best or math.abs(d) < math.abs(best)) then best, which = d, i end
     end
-    if math.abs(x - midX) <= SNAP_CENTER * k then x = midX end
+  end
+  return best or 0, which
+end
+
+local function snapToElements(l, r, b, t)
+  local k = UIParent:GetEffectiveScale() / hud:GetEffectiveScale()
+  local range = SNAP_RANGE * k
+  local W, H = UIParent:GetWidth() * k, UIParent:GetHeight() * k
+  local xs, ys = { 0, W / 2, W }, { 0, H / 2, H }
+  for _, other in ipairs(editModeFrames()) do
+    if other ~= hud then
+      local fl, fr, fb, ft = rectIn(other)
+      if fl then
+        -- a frame counts for one axis only when it is near on the other one
+        if fb - range <= t and b <= ft + range then
+          xs[#xs + 1], xs[#xs + 2], xs[#xs + 3] = fl, fr, (fl + fr) / 2
+        end
+        if fl - range <= r and l <= fr + range then
+          ys[#ys + 1], ys[#ys + 2], ys[#ys + 3] = fb, ft, (fb + ft) / 2
+        end
+      end
+    end
+  end
+  local dx = snapOffset({ l, r, (l + r) / 2 }, xs, range)
+  local dy, edge = snapOffset({ b, t, (b + t) / 2 }, ys, range)
+  return dx, dy, edge == 1 and "BOTTOM" or "TOP"
+end
+
+-- After a drag: the tracker is held at the edge it snapped to, so it grows and shrinks from
+-- the other side when lines change (snapped with its bottom edge: from the top). Otherwise
+-- it hangs from its top centre and grows downwards.
+local function hudPlace()
+  local l, r, b, t = hud:GetLeft(), hud:GetRight(), hud:GetBottom(), hud:GetTop()
+  if not (l and r and b and t) then return end
+  local dx, dy, edge = 0, 0, "TOP"
+  if editMode and editModeSnapOn() then
+    local ok, x, y, e = pcall(snapToElements, l, r, b, t)
+    if ok then dx, dy, edge = x, y, e end
   end
   hud:ClearAllPoints()
-  hud:SetPoint("TOP", UIParent, "BOTTOMLEFT", x, y)
+  hud:SetPoint(edge, UIParent, "BOTTOMLEFT", (l + r) / 2 + dx, (edge == "BOTTOM" and b or t) + dy)
   hudSavePosition()
 end
 
@@ -2043,7 +2089,7 @@ local function showOptions()
   win:Dropdown(L, -244, "Text alignment", 150, { { "LEFT", "Left" }, { "CENTER", "Centre" }, { "RIGHT", "Right" } },
     function() return t.align end, function(v) t.align = v; hudApplyLook() end, "Alignment of the text in the tracker.")
   local reset = win:Button("Reset position", 130, function() hudResetPosition() end,
-    "Puts the tracker back to its starting place at the top right. The game's Edit Mode moves it too, with its grid.")
+    "Puts the tracker back to its starting place at the top right. The game's Edit Mode moves it too.")
   reset:SetPoint("TOPLEFT", L, -296)
   -- lines: on/off, order (arrows) and font size (- / +); the rows follow the chosen order
   win:Header(R, -48, "Lines")
@@ -2342,5 +2388,5 @@ ns.test = {
   pace = pace, hm = hm, thousands = thousands, trackXP = trackXP, sessionGet = sessionGet,
   sessionSave = sessionSave, bump = bump, onDeath = onDeath, buildExport = buildExport, enc = enc, mergeEmptyRealm = mergeEmptyRealm, charKey = charKey,
   migrate = migrate, bankBagIDs = bankBagIDs, store = store, lootQueue = lootQueue, lootReceived = lootReceived,
-  lineOrder = lineOrder, moveLine = moveLine, lineSize = lineSize, hudSettings = hudSettings,
+  lineOrder = lineOrder, moveLine = moveLine, lineSize = lineSize, hudSettings = hudSettings, snapOffset = snapOffset,
 }
