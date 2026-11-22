@@ -1730,8 +1730,8 @@ local HUD_LINES = {
   { key = "next", label = "Time to the next level" },
   { key = "cap", label = "Time to the level cap" },
 }
-local HUD_DEFAULTS = { scale = 1, alpha = 0.6, locked = false, hideInCombat = false, align = "LEFT", lines = {},
-  order = {}, sizes = {} }
+local HUD_DEFAULTS = { scale = 1, alpha = 0.6, opacity = 1, locked = false, hideInCombat = false, align = "LEFT",
+  lines = {}, order = {}, sizes = {} }
 local HUD_ALIGN = { LEFT = true, CENTER = true, RIGHT = true }
 local HUD_SIZE_MIN, HUD_SIZE_MAX, HUD_SIZE_DEFAULT = 8, 20, 10 -- font size per line
 
@@ -1883,6 +1883,7 @@ local function hudApplyLook()
     end
   end
   if hud.editLabel then hud.editLabel:SetShown(editMode) end
+  hud.over = nil -- the opacity is set again on the next check
   -- locked: clicks go through to the game world (Edit Mode can always move it)
   hud:EnableMouse(editMode or not t.locked)
   hudUpdate()
@@ -1973,19 +1974,23 @@ local function snapToElements(l, r, b, t)
   end
   local dx = snapOffset({ l, r, (l + r) / 2 }, xs, range)
   local dy, edge = snapOffset({ b, t, (b + t) / 2 }, ys, range)
-  return dx, dy, edge == 1 and "BOTTOM" or "TOP"
+  return dx, dy, edge == 1 and "BOTTOM" or edge == 2 and "TOP" or nil
 end
 
--- After a drag: the tracker is held at the edge it snapped to, so it grows and shrinks from
--- the other side when lines change (snapped with its bottom edge: from the top). Otherwise
--- it hangs from its top centre and grows downwards.
+-- The tracker is held at one edge, so it grows and shrinks from the other one when lines
+-- change: the edge it snapped to in Edit Mode, else the edge nearer the screen's border
+-- (lower half: its bottom edge, upper half: its top edge).
 local function hudPlace()
   local l, r, b, t = hud:GetLeft(), hud:GetRight(), hud:GetBottom(), hud:GetTop()
   if not (l and r and b and t) then return end
-  local dx, dy, edge = 0, 0, "TOP"
+  local dx, dy, edge = 0, 0, nil
   if editMode and editModeSnapOn() then
     local ok, x, y, e = pcall(snapToElements, l, r, b, t)
     if ok then dx, dy, edge = x, y, e end
+  end
+  if not edge then
+    local mid = UIParent:GetHeight() * UIParent:GetEffectiveScale() / hud:GetEffectiveScale() / 2
+    edge = (b + t) / 2 < mid and "BOTTOM" or "TOP"
   end
   hud:ClearAllPoints()
   hud:SetPoint(edge, UIParent, "BOTTOMLEFT", (l + r) / 2 + dx, (edge == "BOTTOM" and b or t) + dy)
@@ -2030,12 +2035,28 @@ local function hudCreate()
     win:SetPoint(st.point, UIParent, st.rel or st.point, st.x or 0, st.y or 0)
   end
   local acc = 0
-  win:SetScript("OnUpdate", function(_, elapsed)
-    acc = acc + elapsed
+  -- the whole window (text too) at its opacity, fully visible while the mouse is over it
+  -- (also when locked: IsMouseOver needs no mouse input) and in Edit Mode
+  local accOver = 0
+  win:SetScript("OnUpdate", function(self, elapsed)
+    acc, accOver = acc + elapsed, accOver + elapsed
     if acc >= 2 then acc = 0; hudUpdate() end
+    if accOver >= 0.1 then
+      accOver = 0
+      local over = editMode or self:IsMouseOver()
+      if over ~= self.over then
+        self.over = over
+        local o = tonumber(hudSettings().opacity) or 1
+        self:SetAlpha(over and 1 or math.min(math.max(o, 0), 1))
+      end
+    end
   end)
   hud = win
   hudApplyLook()
+  -- a position saved before 1.5.5 hangs from the top: hold it at its nearer edge instead
+  if C_Timer and C_Timer.After then
+    C_Timer.After(0, function() if hud and hud:IsShown() then pcall(hudPlace) end end)
+  end
   return win
 end
 
@@ -2071,7 +2092,7 @@ local function showOptions()
   local t = hudSettings()
   local db = LevelTrailSettings
   local win = UI:CreateWindow({ name = "LevelTrailOptions", title = "LevelTrail",
-    width = 540, height = 364, accent = { 0.498, 0.749, 0.247, 1 }, db = db, posKey = "optPos",
+    width = 540, height = 410, accent = { 0.498, 0.749, 0.247, 1 }, db = db, posKey = "optPos",
     bugUrl = BUG_URL })
   local L, R = 16, 236
   win:Header(L, -48, "Window")
@@ -2086,11 +2107,15 @@ local function showOptions()
   win:Slider(L, -200, "Background", 0, 100, 10, function() return math.floor(t.alpha * 100 + 0.5) end,
     function(v) t.alpha = v / 100; hudApplyLook() end, "Opacity of the background. 0% shows only the text.", 150,
     function(v) return v .. "%" end)
-  win:Dropdown(L, -244, "Text alignment", 150, { { "LEFT", "Left" }, { "CENTER", "Centre" }, { "RIGHT", "Right" } },
+  win:Slider(L, -244, "Window opacity", 0, 100, 10, function() return math.floor((t.opacity or 1) * 100 + 0.5) end,
+    function(v) t.opacity = v / 100; hudApplyLook() end,
+    "Opacity of the whole tracker, text included. With the mouse over it, it is fully visible.", 150,
+    function(v) return v .. "%" end)
+  win:Dropdown(L, -290, "Text alignment", 150, { { "LEFT", "Left" }, { "CENTER", "Centre" }, { "RIGHT", "Right" } },
     function() return t.align end, function(v) t.align = v; hudApplyLook() end, "Alignment of the text in the tracker.")
   local reset = win:Button("Reset position", 130, function() hudResetPosition() end,
     "Puts the tracker back to its starting place at the top right. The game's Edit Mode moves it too.")
-  reset:SetPoint("TOPLEFT", L, -296)
+  reset:SetPoint("TOPLEFT", L, -342)
   -- lines: on/off, order (arrows) and font size (- / +); the rows follow the chosen order
   win:Header(R, -48, "Lines")
   local sizeHead = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
