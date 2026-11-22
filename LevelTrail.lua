@@ -1730,7 +1730,8 @@ local HUD_LINES = {
   { key = "next", label = "Time to the next level" },
   { key = "cap", label = "Time to the level cap" },
 }
-local HUD_DEFAULTS = { scale = 1, alpha = 0.6, locked = false, hideInCombat = false, lines = {} }
+local HUD_DEFAULTS = { scale = 1, alpha = 0.6, locked = false, hideInCombat = false, align = "LEFT", lines = {} }
+local HUD_ALIGN = { LEFT = true, CENTER = true, RIGHT = true }
 
 local function hudSettings()
   LevelTrailSettings = type(LevelTrailSettings) == "table" and LevelTrailSettings or {}
@@ -1797,6 +1798,7 @@ local function hudApplyLook()
   if not hud then return end
   local t = hudSettings()
   hud:SetScale(t.scale)
+  hud.text:SetJustifyH(HUD_ALIGN[t.align] and t.align or "LEFT")
   if hud.SetBackdropColor then
     hud:SetBackdropColor(0, 0, 0, t.alpha)
     hud:SetBackdropBorderColor(1, 1, 1, t.alpha > 0 and 1 or 0)
@@ -1900,7 +1902,7 @@ local function showOptions()
   local t = hudSettings()
   local db = LevelTrailSettings
   local win = UI:CreateWindow({ name = "LevelTrailOptions", title = "LevelTrail",
-    width = 440, height = 320, accent = { 0.498, 0.749, 0.247, 1 }, db = db, posKey = "optPos",
+    width = 440, height = 364, accent = { 0.498, 0.749, 0.247, 1 }, db = db, posKey = "optPos",
     bugUrl = BUG_URL })
   local L, R = 16, 236
   win:Header(L, -48, "Window")
@@ -1915,9 +1917,11 @@ local function showOptions()
   win:Slider(L, -200, "Background", 0, 100, 10, function() return math.floor(t.alpha * 100 + 0.5) end,
     function(v) t.alpha = v / 100; hudApplyLook() end, "Opacity of the background. 0% shows only the text.", 150,
     function(v) return v .. "%" end)
+  win:Dropdown(L, -244, "Text alignment", 150, { { "LEFT", "Left" }, { "CENTER", "Centre" }, { "RIGHT", "Right" } },
+    function() return t.align end, function(v) t.align = v; hudApplyLook() end, "Alignment of the text in the tracker.")
   local reset = win:Button("Reset position", 130, function() hudResetPosition() end,
     "Puts the tracker back to its starting place at the top right.")
-  reset:SetPoint("TOPLEFT", L, -252)
+  reset:SetPoint("TOPLEFT", L, -296)
   win:Header(R, -48, "Lines")
   for i, line in ipairs(HUD_LINES) do
     win:Check(R, -48 - i * 24, line.label, "Show this line in the tracker.",

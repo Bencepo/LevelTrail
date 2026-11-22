@@ -2,6 +2,7 @@
 
 ## 1.5.5
 
+- Text alignment for the tracker window: left, centre or right (settings).
 - The minimap button opens the settings with a left-click, like the other Bencepo addons. Right-click opens the export for the web viewer, shift-click turns the tracker window on or off.
 - The settings window has a "Minimap button" switch and an "Export" button; hiding the minimap button no longer needs a chat command.
 - "Report a bug" uses the same link popup as the other Bencepo addons.
