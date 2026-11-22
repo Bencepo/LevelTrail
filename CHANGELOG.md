@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.6
+
+- The shared settings window (BencepoUI 4): the hint in its title row ("drag to move …") no longer runs into the title and version; it is shortened or left out when there is no room.
+
 ## 1.5.5
 
 - Text alignment for the tracker window: left, centre or right (settings).
