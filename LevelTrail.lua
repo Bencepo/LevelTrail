@@ -649,6 +649,13 @@ local function freeSlots(bag)
   return (try(fn, bag)) or 0
 end
 
+-- Equippable gear worth listing (not bags, ammo or items that only look equippable).
+local NOT_GEAR = { [""] = true, INVTYPE_BAG = true, INVTYPE_NON_EQUIP_IGNORE = true, INVTYPE_AMMO = true }
+local function isGear(link)
+  local loc = itemEquipLoc(link)
+  return loc ~= nil and not NOT_GEAR[loc]
+end
+
 -- returns sizes per bag, item counts by id, and equippable gear found
 local function scanBags(first, last)
   local sizes, items, gear, free = {}, {}, {}, 0
@@ -660,12 +667,7 @@ local function scanBags(first, last)
       local id, count, link = slotItem(bag, slot)
       if id then
         items[id] = (items[id] or 0) + (count or 1)
-        if link then
-          local loc = itemEquipLoc(link)
-          if loc and loc ~= "" and loc ~= "INVTYPE_BAG" and loc ~= "INVTYPE_NON_EQUIP_IGNORE" and loc ~= "INVTYPE_AMMO" then
-            gear[#gear + 1] = itemRecord(link, count)
-          end
-        end
+        if link and isGear(link) then gear[#gear + 1] = itemRecord(link, count) end
       end
     end
   end
@@ -1140,12 +1142,7 @@ local function scanBank()
         local id, count, link = slotItem(bag, slot)
         if id then
           items[id] = (items[id] or 0) + (count or 1)
-          if link then
-            local loc = itemEquipLoc(link)
-            if loc and loc ~= "" and loc ~= "INVTYPE_BAG" and loc ~= "INVTYPE_NON_EQUIP_IGNORE" and loc ~= "INVTYPE_AMMO" then
-              gear[#gear + 1] = itemRecord(link, count)
-            end
-          end
+          if link and isGear(link) then gear[#gear + 1] = itemRecord(link, count) end
         end
       end
     end
@@ -1333,10 +1330,8 @@ local EVENTS = { "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_ENTERING_WORLD", "PLAY
   "PLAYERBANKSLOTS_CHANGED", "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "PLAYER_DEAD",
   "CHAT_MSG_COMBAT_XP_GAIN", "CHAT_MSG_SYSTEM", "MERCHANT_SHOW", "MERCHANT_CLOSED", "UPDATE_INVENTORY_DURABILITY",
   "CHAT_MSG_LOOT", "PLAYER_CONTROL_LOST", "PLAYER_CONTROL_GAINED", "PLAYER_ALIVE", "PLAYER_UNGHOST",
-  "GET_ITEM_INFO_RECEIVED" }
+  "GET_ITEM_INFO_RECEIVED", "BANKFRAME_CLOSED" }
 for _, ev in ipairs(EVENTS) do pcall(f.RegisterEvent, f, ev) end
-
-f:RegisterEvent("BANKFRAME_CLOSED")
 
 -- Moving items in the bank and crafting fire these events many times in a row:
 -- one scan a second after the first of a burst.
@@ -1651,53 +1646,14 @@ local function buildExport(s)
 end
 
 ---------------------------------------------------------------- report a bug
--- Addons cannot open a browser: a small window holds the issue link, selected for Ctrl+C.
-local bugFrame
+-- Addons cannot open a browser: the shared BencepoUI popup holds the issue link, selected for Ctrl+C.
 local function showBugReport()
-  if not bugFrame then
-    local win = CreateFrame("Frame", "LevelTrailBugFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-    bugFrame = win
-    tinsert(UISpecialFrames, "LevelTrailBugFrame")
-    win:SetSize(420, 112)
-    win:SetPoint("CENTER", 0, 120)
-    win:SetFrameStrata("FULLSCREEN_DIALOG")
-    win:SetClampedToScreen(true)
-    win:SetMovable(true)
-    win:EnableMouse(true)
-    win:RegisterForDrag("LeftButton")
-    win:SetScript("OnDragStart", win.StartMoving)
-    win:SetScript("OnDragStop", win.StopMovingOrSizing)
-    if win.SetBackdrop then
-      win:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 16,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 } })
-    end
-    local title = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", 14, -12)
-    title:SetText("Report a bug")
-    local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
-    close:SetPoint("TOPRIGHT", -2, -2)
-    local edit = CreateFrame("EditBox", nil, win, "InputBoxTemplate")
-    edit:SetPoint("TOPLEFT", 20, -38)
-    edit:SetPoint("RIGHT", -16, 0)
-    edit:SetHeight(24)
-    edit:SetAutoFocus(false)
-    edit:SetScript("OnEscapePressed", function() win:Hide() end)
-    edit:SetScript("OnTextChanged", function(self, user)
-      if user then self:SetText(BUG_URL) self:HighlightText() end
-    end)
-    edit:SetScript("OnMouseUp", function(self) self:HighlightText() end)
-    win.edit = edit
-    local hint = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    hint:SetPoint("TOPLEFT", edit, "BOTTOMLEFT", -4, -8)
-    hint:SetPoint("RIGHT", -14, 0)
-    hint:SetJustifyH("LEFT")
-    hint:SetText("Copy with Ctrl+C. No GitHub account? Comment on CurseForge.")
+  local UI = LibStub and LibStub("BencepoUI-1.0", true)
+  if UI and UI.ShowLink then
+    UI:ShowLink(nil, "Report a bug", BUG_URL, "Copy with Ctrl+C. No GitHub account? Comment on CurseForge.")
+  else
+    print("|cff7fbf3fLevelTrail:|r report a bug at " .. BUG_URL)
   end
-  bugFrame.edit:SetText(BUG_URL)
-  bugFrame:Show()
-  bugFrame.edit:SetFocus()
-  bugFrame.edit:HighlightText()
 end
 
 local exportFrame
@@ -1930,8 +1886,9 @@ local function hudResetPosition()
   end
 end
 
----------------------------------------------------------------- tracker options window (/trail options)
+---------------------------------------------------------------- options window (/trail options)
 -- Its own window, dragged anywhere and left open while playing, so every change shows at once.
+local minimapShown, setMinimapShown -- defined with the minimap button below
 local optionsWin
 local function showOptions()
   if optionsWin then optionsWin:Toggle(); return end
@@ -1942,8 +1899,8 @@ local function showOptions()
   end
   local t = hudSettings()
   local db = LevelTrailSettings
-  local win = UI:CreateWindow({ name = "LevelTrailOptions", title = "LevelTrail tracker",
-    width = 440, height = 290, accent = { 0.498, 0.749, 0.247, 1 }, db = db, posKey = "optPos",
+  local win = UI:CreateWindow({ name = "LevelTrailOptions", title = "LevelTrail",
+    width = 440, height = 320, accent = { 0.498, 0.749, 0.247, 1 }, db = db, posKey = "optPos",
     bugUrl = BUG_URL })
   local L, R = 16, 236
   win:Header(L, -48, "Window")
@@ -1966,6 +1923,12 @@ local function showOptions()
     win:Check(R, -48 - i * 24, line.label, "Show this line in the tracker.",
       function() return lineOn(line.key) end, function(v) t.lines[line.key] = v; hudUpdate() end)
   end
+  win:Header(R, -226, "General")
+  win:Check(R, -250, "Minimap button", "Show the LevelTrail button at the minimap. The addon menu next to the minimap has it either way.",
+    function() return minimapShown() end, function(v) setMinimapShown(v) end)
+  local export = win:Button("Export", 100, function() SlashCmdList["LEVELTRAIL"]("") end,
+    "Opens the export for the web viewer at bencepo.github.io/leveltrail.")
+  export:SetPoint("TOPLEFT", reset, "BOTTOMLEFT", 0, -8)
   optionsWin = win
   win:Show()
 end
@@ -2003,14 +1966,16 @@ end
 
 local minimapButton
 
+-- Left-click: settings, like every Bencepo addon. Right-click: export. Shift-click: tracker on/off.
 local function minimapClick(button)
   if IsShiftKeyDown and IsShiftKeyDown() then
-    showOptions()
-  elseif button == "RightButton" then
     local okH, errH = pcall(hudShow, not (hud and hud:IsShown()))
     if not okH then print("|cffff5555LevelTrail: tracker failed:|r " .. tostring(errH)) end
-  else
+  elseif button == "RightButton" then
     SlashCmdList["LEVELTRAIL"]("")
+  else
+    local okO, errO = pcall(showOptions)
+    if not okO then print("|cffff5555LevelTrail: options failed:|r " .. tostring(errO)) end
   end
 end
 
@@ -2021,10 +1986,10 @@ local function minimapTooltip(tip)
     for line in text:gmatch("[^\n]+") do tip:AddLine(line, 1, 1, 1) end
   end
   tip:AddLine(" ")
-  tip:AddLine("Left-click: export for bencepo.github.io/leveltrail", 0.6, 0.8, 1)
-  tip:AddLine("Right-click: tracker window on/off", 0.6, 0.8, 1)
-  tip:AddLine("Shift-click: tracker options", 0.6, 0.8, 1)
-  tip:AddLine("Drag: move. /trail minimap: hide or show", 0.6, 0.8, 1)
+  tip:AddLine("Left-click: settings", 0.6, 0.8, 1)
+  tip:AddLine("Right-click: export for bencepo.github.io/leveltrail", 0.6, 0.8, 1)
+  tip:AddLine("Shift-click: tracker window on/off", 0.6, 0.8, 1)
+  tip:AddLine("Drag: move. Hide it in the settings.", 0.6, 0.8, 1)
 end
 
 -- Account-wide settings live in their own saved variable, apart from the characters
@@ -2037,6 +2002,15 @@ local function minimapSettings()
   end
   LevelTrailSettings.minimap = LevelTrailSettings.minimap or {}
   return LevelTrailSettings.minimap
+end
+
+minimapShown = function() return not minimapSettings().hide end
+-- returns false when there is no minimap button (LibDBIcon did not load)
+setMinimapShown = function(show)
+  if not minimapButton then return false end
+  minimapSettings().hide = not show
+  minimapButton:SetShown(show)
+  return true
 end
 
 local minimapEvents = CreateFrame("Frame")
@@ -2072,14 +2046,16 @@ local function otherRecords()
   return list
 end
 
+-- Builds the export of a record and shows it; false when the window could not open.
 local function exportRecord(rec, summary)
   local okE, data = pcall(buildExport, rec)
-  if not okE then print("|cffff5555LevelTrail: export failed:|r " .. tostring(data)) return end
+  if not okE then print("|cffff5555LevelTrail: export failed:|r " .. tostring(data)) return true end
   local out = {}
   local okJ, err = pcall(enc, data, out)
-  if not okJ then print("|cffff5555LevelTrail: encoding failed:|r " .. tostring(err)) return end
+  if not okJ then print("|cffff5555LevelTrail: encoding failed:|r " .. tostring(err)) return true end
   local okS, err2 = pcall(showExport, table.concat(out), summary)
   if not okS then print("|cffff5555LevelTrail: window failed:|r " .. tostring(err2)) end
+  return okS
 end
 
 SLASH_LEVELTRAIL1 = "/trail"
@@ -2096,14 +2072,13 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
     if not okO then print("|cffff5555LevelTrail: options failed:|r " .. tostring(errO)) end
     return
   elseif msg == "minimap" then
-    if not minimapButton then
+    local show = not minimapShown()
+    if not setMinimapShown(show) then
       print("|cffff5555LevelTrail:|r there is no minimap button (LibDBIcon did not load). Use /trail or the addon menu.")
       return
     end
-    local st = minimapSettings()
-    st.hide = not st.hide
-    minimapButton:SetShown(not st.hide)
-    print("|cff7fbf3f" .. TITLE .. "|r minimap button " .. (st.hide and "hidden" or "shown"))
+    print("|cff7fbf3f" .. TITLE .. "|r minimap button " .. (show and "shown" or "hidden"))
+    if optionsWin then optionsWin:Refresh() end
     return
   elseif msg == "bug" then
     showBugReport()
@@ -2158,16 +2133,10 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
     print("|cff7fbf3f" .. TITLE .. "|r " .. summary)
     return
   end
-  local okE, data = pcall(buildExport, s)
-  if not okE then print("|cffff5555LevelTrail: export failed:|r " .. tostring(data)) return end
-  local out = {}
-  local okJ, err = pcall(enc, data, out)
-  if not okJ then print("|cffff5555LevelTrail: encoding failed:|r " .. tostring(err)) return end
-  local okS, err2 = pcall(showExport, table.concat(out), summary)
-  if not okS then
-    print("|cffff5555LevelTrail: window failed:|r " .. tostring(err2))
+  if not exportRecord(s, summary) then
     print("|cff7fbf3f" .. TITLE .. "|r " .. summary .. " (type /reload to write the file instead)")
-  end  local others = otherRecords()
+  end
+  local others = otherRecords()
   if #others > 0 then
     print("|cff7fbf3fLevelTrail:|r " .. #others .. " older record(s) of this character found. Type /trail old to export them for the web viewer.")
   end
