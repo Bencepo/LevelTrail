@@ -21,6 +21,35 @@ describe("LevelTrail", function()
 		end)
 	end)
 
+	describe("tracker lines", function()
+		it("keeps every line once, in the chosen order, lines added later at the end", function()
+			local t = T.hudSettings()
+			t.order = { "pace", "level", "pace", "gone" }
+			local order = T.lineOrder()
+			assert.equal("pace", order[1])
+			assert.equal("level", order[2])
+			assert.equal(6, #order)
+		end)
+		it("moves a line and stops at the ends", function()
+			T.hudSettings().order = {}
+			T.moveLine("onLevel", -1)
+			assert.equal("onLevel", T.lineOrder()[1])
+			T.moveLine("onLevel", -1)
+			assert.equal("onLevel", T.lineOrder()[1])
+			local last = T.lineOrder()[6]
+			T.moveLine(last, 1)
+			assert.equal(last, T.lineOrder()[6])
+		end)
+		it("keeps the text size within its limits", function()
+			local t = T.hudSettings()
+			assert.equal(10, T.lineSize("level"))
+			t.sizes.level = 50
+			assert.equal(20, T.lineSize("level"))
+			t.sizes.level = 2
+			assert.equal(8, T.lineSize("level"))
+		end)
+	end)
+
 	describe("chat lines", function()
 		it("reads the XP of a kill", function()
 			local p = T.toPattern(env.COMBATLOG_XPGAIN_FIRSTPERSON)

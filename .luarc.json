@@ -12,6 +12,7 @@
     "BANK_CONTAINER",
     "CollapseFactionHeader",
     "COMBATLOG_XPGAIN_FIRSTPERSON",
+    "EditModeManagerFrame",
     "ERR_ZONE_EXPLORED_XP",
     "ExpandFactionHeader",
     "GetContainerNumFreeSlots",

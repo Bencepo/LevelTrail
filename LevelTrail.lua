@@ -1730,8 +1730,10 @@ local HUD_LINES = {
   { key = "next", label = "Time to the next level" },
   { key = "cap", label = "Time to the level cap" },
 }
-local HUD_DEFAULTS = { scale = 1, alpha = 0.6, locked = false, hideInCombat = false, align = "LEFT", lines = {} }
+local HUD_DEFAULTS = { scale = 1, alpha = 0.6, locked = false, hideInCombat = false, align = "LEFT", lines = {},
+  order = {}, sizes = {} }
 local HUD_ALIGN = { LEFT = true, CENTER = true, RIGHT = true }
+local HUD_SIZE_MIN, HUD_SIZE_MAX, HUD_SIZE_DEFAULT = 8, 20, 10 -- font size per line
 
 local function hudSettings()
   LevelTrailSettings = type(LevelTrailSettings) == "table" and LevelTrailSettings or {}
@@ -1748,13 +1750,46 @@ local function lineOn(key)
   return hudSettings().lines[key] ~= false
 end
 
+-- The lines in the order chosen in the settings; lines added later go to the end.
+local function lineOrder()
+  local t, seen, out = hudSettings(), {}, {}
+  local known = {}
+  for _, l in ipairs(HUD_LINES) do known[l.key] = true end
+  for _, key in ipairs(t.order) do
+    if known[key] and not seen[key] then seen[key] = true; out[#out + 1] = key end
+  end
+  for _, l in ipairs(HUD_LINES) do
+    if not seen[l.key] then out[#out + 1] = l.key end
+  end
+  t.order = out
+  return out
+end
+
+-- Moves a line one place up (-1) or down (1).
+local function moveLine(key, dir)
+  local order = lineOrder()
+  for i, k in ipairs(order) do
+    if k == key then
+      local j = i + dir
+      if order[j] then order[i], order[j] = order[j], order[i] end
+      return
+    end
+  end
+end
+
+local function lineSize(key)
+  local v = tonumber(hudSettings().sizes[key])
+  return v and math.min(math.max(v, HUD_SIZE_MIN), HUD_SIZE_MAX) or HUD_SIZE_DEFAULT
+end
+
+-- The tracker's lines as { key, text } in the chosen order.
 -- all = true for the minimap tooltip, which always shows every line.
-local function hudLines(all)
+local function hudLineList(all)
   local s = store()
   local p = pace(s)
-  local lines = {}
+  local byKey = {}
   local function add(key, text)
-    if all or lineOn(key) then lines[#lines + 1] = text end
+    if all or lineOn(key) then byKey[key] = text end
   end
   local xp, xpMax = UnitXP("player") or 0, UnitXPMax("player") or 0
   if p.atCap then
@@ -1782,37 +1817,82 @@ local function hudLines(all)
       add("next", "Time to level: after the first full level")
     end
   end
-  if #lines == 0 then lines[1] = "LevelTrail: no lines chosen" end
-  return table.concat(lines, "\n")
+  local lines = {}
+  for _, key in ipairs(lineOrder()) do
+    if byKey[key] then lines[#lines + 1] = { key = key, text = byKey[key] } end
+  end
+  return lines
 end
 
-local function hudUpdate()
-  if hud and hud:IsShown() then
-    local ok, text = pcall(hudLines)
-    hud.text:SetText(ok and text or "LevelTrail: " .. tostring(text))
-    hud:SetHeight(hud.text:GetStringHeight() + 16)
-  end
+local function hudLines(all)
+  local out = {}
+  for _, l in ipairs(hudLineList(all)) do out[#out + 1] = l.text end
+  return table.concat(out, "\n")
 end
+
+-- One text per line, stacked in the chosen order, each in its own size.
+local HUD_GAP = 2
+local function hudUpdate()
+  if not (hud and hud:IsShown()) then return end
+  local ok, lines = pcall(hudLineList)
+  if not ok then lines = { { key = "error", text = "LevelTrail: " .. tostring(lines) } }
+  elseif #lines == 0 then lines = { { key = "none", text = "LevelTrail: no lines chosen" } } end
+  local t = hudSettings()
+  local align = HUD_ALIGN[t.align] and t.align or "LEFT"
+  local font = hud.font
+  local height, prev = 16, nil
+  for i, l in ipairs(lines) do
+    local fs = hud.rows[i]
+    if not fs then
+      fs = hud:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      hud.rows[i] = fs
+    end
+    fs:ClearAllPoints()
+    if prev then
+      fs:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -HUD_GAP)
+      fs:SetPoint("TOPRIGHT", prev, "BOTTOMRIGHT", 0, -HUD_GAP)
+    else
+      fs:SetPoint("TOPLEFT", 8, -8)
+      fs:SetPoint("TOPRIGHT", -8, -8)
+    end
+    if font then fs:SetFont(font, lineSize(l.key), hud.fontFlags) end
+    fs:SetJustifyH(align)
+    fs:SetText(l.text)
+    fs:Show()
+    height = height + fs:GetStringHeight() + (prev and HUD_GAP or 0)
+    prev = fs
+  end
+  for i = #lines + 1, #hud.rows do hud.rows[i]:Hide() end
+  hud:SetHeight(height)
+end
+
+local editMode = false -- the game's Edit Mode is open: the tracker shows and moves there
 
 local function hudApplyLook()
   if not hud then return end
   local t = hudSettings()
   hud:SetScale(t.scale)
-  hud.text:SetJustifyH(HUD_ALIGN[t.align] and t.align or "LEFT")
   if hud.SetBackdropColor then
-    hud:SetBackdropColor(0, 0, 0, t.alpha)
-    hud:SetBackdropBorderColor(1, 1, 1, t.alpha > 0 and 1 or 0)
+    if editMode then
+      -- the look of Edit Mode's own frames: blue, with the name
+      hud:SetBackdropColor(0.25, 0.55, 1, 0.35)
+      hud:SetBackdropBorderColor(0.35, 0.65, 1, 1)
+    else
+      hud:SetBackdropColor(0, 0, 0, t.alpha)
+      hud:SetBackdropBorderColor(1, 1, 1, t.alpha > 0 and 1 or 0)
+    end
   end
-  -- locked: clicks go through to the game world
-  hud:EnableMouse(not t.locked)
+  if hud.editLabel then hud.editLabel:SetShown(editMode) end
+  -- locked: clicks go through to the game world (Edit Mode can always move it)
+  hud:EnableMouse(editMode or not t.locked)
   hudUpdate()
 end
 
 local inCombat = false
--- Shown when the character wants it and it is not hidden for combat.
+-- Shown when the character wants it and it is not hidden for combat, and always in Edit Mode.
 local function hudRefreshShown()
   local st = store().hud
-  local want = st and st.shown and not (inCombat and hudSettings().hideInCombat)
+  local want = editMode or (st and st.shown and not (inCombat and hudSettings().hideInCombat))
   if want then
     if not hud then return end
     hud:Show()
@@ -1829,6 +1909,43 @@ local function hudSavePosition()
   st.hud.point, st.hud.rel, st.hud.x, st.hud.y = point, rel, x, y
 end
 
+-- Edit Mode's grid, when its "Snap" is on: spacing in UIParent units, or nil.
+local function editModeGrid()
+  local m = EditModeManagerFrame
+  if not m then return nil end
+  local okS, snap = pcall(function() return m.IsSnapEnabled and m:IsSnapEnabled() end)
+  if not (okS and snap) then return nil end
+  local okG, spacing = pcall(function()
+    return (m.Grid and m.Grid.gridSpacing) or (m.GetGridSpacing and m:GetGridSpacing())
+  end)
+  spacing = okG and tonumber(spacing)
+  return spacing and spacing > 0 and spacing or nil
+end
+
+-- After a drag: the tracker hangs from its top centre, so larger lines grow it downwards.
+-- In Edit Mode it snaps to the screen centre line and, with "Snap" on, to the grid.
+local SNAP_CENTER = 10 -- pixels from the screen centre that snap onto it
+local function hudPlace()
+  local left, right, top = hud:GetLeft(), hud:GetRight(), hud:GetTop()
+  if not (left and right and top) then return end
+  local x, y = (left + right) / 2, top
+  if editMode then
+    -- grid and screen in the tracker's own scale
+    local k = UIParent:GetEffectiveScale() / hud:GetEffectiveScale()
+    local midX, midY = UIParent:GetWidth() * k / 2, UIParent:GetHeight() * k / 2
+    local grid = editModeGrid()
+    if grid then
+      grid = grid * k
+      x = midX + math.floor((x - midX) / grid + 0.5) * grid
+      y = midY + math.floor((y - midY) / grid + 0.5) * grid
+    end
+    if math.abs(x - midX) <= SNAP_CENTER * k then x = midX end
+  end
+  hud:ClearAllPoints()
+  hud:SetPoint("TOP", UIParent, "BOTTOMLEFT", x, y)
+  hudSavePosition()
+end
+
 local function hudCreate()
   if hud then return hud end
   local win = CreateFrame("Frame", "LevelTrailTracker", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
@@ -1843,7 +1960,7 @@ local function hudCreate()
   win:SetScript("OnDragStop", function(self)
     self:StopMovingOrSizing()
     hud = self
-    hudSavePosition()
+    hudPlace()
   end)
   if win.SetBackdrop then
     win:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -1851,10 +1968,16 @@ local function hudCreate()
       insets = { left = 3, right = 3, top = 3, bottom = 3 } })
     win:SetBackdropColor(0, 0, 0, 0.6)
   end
-  win.text = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  win.text:SetPoint("TOPLEFT", 8, -8)
-  win.text:SetPoint("RIGHT", -8, 0)
-  win.text:SetJustifyH("LEFT")
+  win.rows = {}
+  win.editLabel = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  win.editLabel:SetPoint("BOTTOM", win, "TOP", 0, 4)
+  win.editLabel:SetText("LevelTrail")
+  win.editLabel:Hide()
+  -- the tracker's font; each line sets only its own size
+  if GameFontHighlightSmall and GameFontHighlightSmall.GetFont then
+    local path, _, flags = GameFontHighlightSmall:GetFont()
+    win.font, win.fontFlags = path, flags
+  end
   local st = store().hud
   if st and st.point then
     win:ClearAllPoints()
@@ -1902,7 +2025,7 @@ local function showOptions()
   local t = hudSettings()
   local db = LevelTrailSettings
   local win = UI:CreateWindow({ name = "LevelTrailOptions", title = "LevelTrail",
-    width = 440, height = 364, accent = { 0.498, 0.749, 0.247, 1 }, db = db, posKey = "optPos",
+    width = 540, height = 364, accent = { 0.498, 0.749, 0.247, 1 }, db = db, posKey = "optPos",
     bugUrl = BUG_URL })
   local L, R = 16, 236
   win:Header(L, -48, "Window")
@@ -1920,15 +2043,64 @@ local function showOptions()
   win:Dropdown(L, -244, "Text alignment", 150, { { "LEFT", "Left" }, { "CENTER", "Centre" }, { "RIGHT", "Right" } },
     function() return t.align end, function(v) t.align = v; hudApplyLook() end, "Alignment of the text in the tracker.")
   local reset = win:Button("Reset position", 130, function() hudResetPosition() end,
-    "Puts the tracker back to its starting place at the top right.")
+    "Puts the tracker back to its starting place at the top right. The game's Edit Mode moves it too, with its grid.")
   reset:SetPoint("TOPLEFT", L, -296)
+  -- lines: on/off, order (arrows) and font size (- / +); the rows follow the chosen order
   win:Header(R, -48, "Lines")
-  for i, line in ipairs(HUD_LINES) do
-    win:Check(R, -48 - i * 24, line.label, "Show this line in the tracker.",
-      function() return lineOn(line.key) end, function(v) t.lines[line.key] = v; hudUpdate() end)
+  local sizeHead = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  sizeHead:SetPoint("TOPLEFT", R + 172, -52)
+  sizeHead:SetText("Order    Size")
+  local rows = {}
+  local function small(text, tip, onClick)
+    local b = win:Button(text, 20, onClick, tip)
+    b:SetHeight(18)
+    return b
   end
-  win:Header(R, -226, "General")
-  win:Check(R, -250, "Minimap button", "Show the LevelTrail button at the minimap. The addon menu next to the minimap has it either way.",
+  for _, line in ipairs(HUD_LINES) do
+    local key = line.key
+    local r = {}
+    r.check = win:Check(R, -72, line.label, "Show this line in the tracker.",
+      function() return lineOn(key) end, function(v) t.lines[key] = v; hudUpdate() end)
+    r.up = small("^", "Move this line up.", function() moveLine(key, -1); hudUpdate() end)
+    r.down = small("v", "Move this line down.", function() moveLine(key, 1); hudUpdate() end)
+    r.minus = small("-", "Smaller text for this line.", function()
+      t.sizes[key] = math.max(lineSize(key) - 1, HUD_SIZE_MIN); hudUpdate()
+    end)
+    r.plus = small("+", "Larger text for this line.", function()
+      t.sizes[key] = math.min(lineSize(key) + 1, HUD_SIZE_MAX); hudUpdate()
+    end)
+    r.size = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    r.size:SetWidth(22)
+    r.size:SetJustifyH("CENTER")
+    rows[key] = r
+  end
+  win:OnRefresh(function()
+    for i, key in ipairs(lineOrder()) do
+      local r, y = rows[key], -72 - (i - 1) * 24
+      r.check:ClearAllPoints()
+      r.check:SetPoint("TOPLEFT", R, y)
+      r.up:ClearAllPoints()
+      r.up:SetPoint("TOPLEFT", R + 168, y + 1)
+      r.down:ClearAllPoints()
+      r.down:SetPoint("LEFT", r.up, "RIGHT", 2, 0)
+      r.minus:ClearAllPoints()
+      r.minus:SetPoint("LEFT", r.down, "RIGHT", 14, 0)
+      r.size:ClearAllPoints()
+      r.size:SetPoint("LEFT", r.minus, "RIGHT", 2, 0)
+      r.size:SetText(lineSize(key))
+      r.plus:ClearAllPoints()
+      r.plus:SetPoint("LEFT", r.size, "RIGHT", 2, 0)
+      r.up:SetEnabled(i > 1)
+      r.down:SetEnabled(i < #HUD_LINES)
+    end
+  end)
+  local resetLines = win:Button("Default lines", 120, function()
+    t.order, t.sizes, t.lines = {}, {}, {}
+    hudUpdate()
+  end, "All lines on, in the default order and size.")
+  resetLines:SetPoint("TOPLEFT", R, -72 - #HUD_LINES * 24 - 4)
+  win:Header(R, -246, "General")
+  win:Check(R, -270, "Minimap button", "Show the LevelTrail button at the minimap. The addon menu next to the minimap has it either way.",
     function() return minimapShown() end, function(v) setMinimapShown(v) end)
   local export = win:Button("Export", 100, function() SlashCmdList["LEVELTRAIL"]("") end,
     "Opens the export for the web viewer at bencepo.github.io/leveltrail.")
@@ -1941,8 +2113,26 @@ local hudEvents = CreateFrame("Frame")
 hudEvents:RegisterEvent("PLAYER_LOGIN")
 hudEvents:RegisterEvent("PLAYER_REGEN_DISABLED")
 hudEvents:RegisterEvent("PLAYER_REGEN_ENABLED")
+-- The game's Edit Mode: the tracker shows there and can be placed like the game's own frames.
+local function setEditMode(on)
+  editMode = on
+  if on then hudCreate() end
+  hudApplyLook()
+  hudRefreshShown()
+end
+local function hookEditMode()
+  if EventRegistry and EventRegistry.RegisterCallback then
+    EventRegistry:RegisterCallback("EditMode.Enter", function() pcall(setEditMode, true) end, hudEvents)
+    EventRegistry:RegisterCallback("EditMode.Exit", function() pcall(setEditMode, false) end, hudEvents)
+  elseif EditModeManagerFrame and hooksecurefunc then
+    hooksecurefunc(EditModeManagerFrame, "EnterEditMode", function() pcall(setEditMode, true) end)
+    hooksecurefunc(EditModeManagerFrame, "ExitEditMode", function() pcall(setEditMode, false) end)
+  end
+end
+
 hudEvents:SetScript("OnEvent", function(_, event)
   if event == "PLAYER_LOGIN" then
+    pcall(hookEditMode)
     local st = store().hud
     if st and st.shown then pcall(hudShow, true) end
   else
@@ -2152,4 +2342,5 @@ ns.test = {
   pace = pace, hm = hm, thousands = thousands, trackXP = trackXP, sessionGet = sessionGet,
   sessionSave = sessionSave, bump = bump, onDeath = onDeath, buildExport = buildExport, enc = enc, mergeEmptyRealm = mergeEmptyRealm, charKey = charKey,
   migrate = migrate, bankBagIDs = bankBagIDs, store = store, lootQueue = lootQueue, lootReceived = lootReceived,
+  lineOrder = lineOrder, moveLine = moveLine, lineSize = lineSize, hudSettings = hudSettings,
 }
