@@ -378,7 +378,7 @@ function barChart(splits) {
   const data = splits.filter(s => s.dur != null);
   if (!data.length) return `<div class="empty">No completed level yet. Splits start with your next level-up.</div>`;
   const W = 1000, H = 220, P = {l: 46, r: 8, t: 10, b: 24};
-  const max = Math.max(...data.map(s => +s.dur));
+  const max = Math.max(1, ...data.map(s => +s.dur));
   const bw = Math.min(70, (W - P.l - P.r) / data.length);
   const y = v => H - P.b - (v / max) * (H - P.t - P.b);
   const ticks = [0, .25, .5, .75, 1].map(f => f * max);
@@ -889,7 +889,7 @@ function drawCard(c, S) {
   const data = S.splits.filter(s => s.dur != null).slice(-30);
   const cx = 60, cy = 395, cw = 1080, ch = 150;
   if (data.length) {
-    const max = Math.max(...data.map(s => +s.dur)), bw = Math.min(60, cw / data.length);
+    const max = Math.max(1, ...data.map(s => +s.dur)), bw = Math.min(60, cw / data.length);
     data.forEach((s, i) => { const h = Math.max(3, (+s.dur / max) * ch); ctx.fillStyle = s.partial ? "#5b4a26" : "#e0b45a"; roundRect(0, ctx, cx + i * bw + bw * .15, cy + ch - h, bw * .7, h, 3); ctx.fill(); });
     ctx.fillStyle = "#8d97a5"; ctx.font = `400 18px ${F}`;
     ctx.fillText(`Time per level, levels ${data[0].level}–${data[data.length - 1].level}`, cx, cy + ch + 32);
@@ -982,17 +982,16 @@ $("view").addEventListener("click", async ev => {
   if (t.id === "demoOut") { current = null; demoMode = false; render(); $("paste").focus(); return; }
   if (t.id === "delChar") { delete chars[current]; save(chars); current = Object.keys(chars)[0] || null; render(); return; }
   if (!c) return;
-  const S = stats(c), out = $("shareMsg");
   if (t.id === "dlCard") {
     const a = document.createElement("a"); a.download = `leveltrail-${(hideName ? "run" : c.name || "run").toLowerCase()}-${c.level}.png`;
-    a.href = $("card").toDataURL("image/png"); a.click(); out.textContent = "Saved.";
-  }
-  if (t.id === "copyCard") {
+    a.href = $("card").toDataURL("image/png"); a.click(); $("shareMsg").textContent = "Saved.";
+  } else if (t.id === "copyCard") {
+    const out = $("shareMsg");
     try { const blob = await new Promise(r => $("card").toBlob(r, "image/png")); await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); out.textContent = "Image copied. Paste it into Discord."; }
     catch (e) { out.textContent = "Your browser cannot copy images. Use Download instead."; }
-  }
-  if (t.id === "copyText") {
-    try { await navigator.clipboard.writeText(shareText(c, S)); out.textContent = "Text copied."; }
+  } else if (t.id === "copyText") {
+    const out = $("shareMsg");
+    try { await navigator.clipboard.writeText(shareText(c, stats(c))); out.textContent = "Text copied."; }
     catch (e) { out.textContent = "Copy failed."; }
   }
 });

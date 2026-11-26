@@ -30,11 +30,14 @@ local ADDON_VERSION = GetMetadata and GetMetadata(ADDON, "Version") or ""
 if ADDON_VERSION == "" or ADDON_VERSION:find("^@") then ADDON_VERSION = "dev" end
 local TITLE = "LevelTrail " .. ADDON_VERSION
 
+local function tryTail(ok, ...)
+  if ok then return ... end
+  return nil
+end
+
 local function try(fn, ...)
   if type(fn) ~= "function" then return nil end
-  local ok, a, b, c, d, e, f, g, h = pcall(fn, ...)
-  if ok then return a, b, c, d, e, f, g, h end
-  return nil
+  return tryTail(pcall(fn, ...))
 end
 
 ---------------------------------------------------------------- XP table and level cap
@@ -71,24 +74,40 @@ end
 
 -- Some clients return an empty realm name (seen on WoW Forever in Nov 2026). The record then
 -- stays under the realm this character already has a record for, instead of starting a new one.
-local knownRealm
+local charCache = {}
 local function charKey()
+  if charCache.key then return charCache.key, charCache.name, charCache.realm end
   local name = UnitName("player") or "?"
   local realm = GetRealmName and GetRealmName() or "?"
   if realm == "" then
-    if not knownRealm then
+    if not charCache.knownRealm then
       local best
       for _, rec in pairs(LevelTrailDB or {}) do
         if type(rec) == "table" and rec.name == name and type(rec.realm) == "string" and rec.realm ~= ""
           and (not best or (rec.ts or 0) > (best.ts or 0)) then best = rec end
       end
-      knownRealm = best and best.realm or nil
+      charCache.knownRealm = best and best.realm or nil
     end
-    realm = knownRealm or realm
+    realm = charCache.knownRealm or realm
   else
-    knownRealm = realm
+    charCache.knownRealm = realm
   end
-  return name .. "-" .. realm, name, realm
+  local key = name .. "-" .. realm
+  if name ~= "" and name ~= "?" and realm ~= "" and realm ~= "?" then
+    charCache.key, charCache.name, charCache.realm = key, name, realm
+  end
+  return key, name, realm
+end
+
+local function archiveSession(s, old)
+  s.sessionMonths = s.sessionMonths or {}
+  local m = tostring(old.date or ""):sub(1, 7)
+  local agg = s.sessionMonths[m] or { sessions = 0, minutes = 0, xp = 0, copper = 0 }
+  agg.sessions = agg.sessions + 1
+  agg.minutes = agg.minutes + (old.minutes or 0)
+  agg.xp = agg.xp + (old.xpGained or 0)
+  agg.copper = agg.copper + (old.copperDelta or 0)
+  s.sessionMonths[m] = agg
 end
 
 -- Adds the history of an older record (src) to the newer one (dst). Snapshot values (level,
@@ -120,15 +139,18 @@ local function mergeRecord(dst, src)
   for _, sp in pairs(byLevel) do splits[#splits + 1] = sp end
   table.sort(splits, function(a, b) return a.level < b.level end)
   dst.splits = splits
-  local function join(key, limit)
+  local function join(key, limit, onDrop)
     local list = {}
     for _, x in ipairs(src[key] or {}) do list[#list + 1] = x end
     for _, x in ipairs(dst[key] or {}) do list[#list + 1] = x end
-    while limit and #list > limit do table.remove(list, 1) end
+    while limit and #list > limit do
+      local old = table.remove(list, 1)
+      if onDrop then onDrop(dst, old) end
+    end
     if #list > 0 then dst[key] = list end
   end
   dst.deathCount = (dst.deathCount or #(dst.deaths or {})) + (src.deathCount or #(src.deaths or {}))
-  join("deaths"); join("sessions"); join("dungeons", 50)
+  join("deaths", 100); join("sessions", 30, archiveSession); join("dungeons", 50)
   for _, key in ipairs({ "deathsByLevel", "sessionMonths", "zoneLevels", "xpSources", "travel", "questsByLevel" }) do
     if type(src[key]) == "table" then
       dst[key] = type(dst[key]) == "table" and dst[key] or {}
@@ -221,6 +243,8 @@ local function zoneLevelRec(s, zone, level)
 end
 
 local sessionTouch -- defined with the sessions below
+local eventFrame, hudSettings, hudUpdate, hudRefreshShown, onLoginUI -- defined below
+local inCombat = false
 
 local function clockTick()
   local s = store()
@@ -241,6 +265,7 @@ local function clockTick()
   end
   clockLast = now
   clockZone = currentZone()
+  if hudUpdate then pcall(hudUpdate) end
 end
 
 local function levelInit()
@@ -294,13 +319,8 @@ end
 local function numberIn(msg, pattern)
   if not pattern or type(msg) ~= "string" or isSecret(msg) then return nil end
   local ok, m1, m2, m3, m4 = pcall(string.match, msg, pattern)
-  if not ok then return nil end
-  local captures = { m1, m2, m3, m4 }
-  for _, c in ipairs(captures) do
-    local n = tonumber(c)
-    if n then return n end
-  end
-  return nil
+  if not ok or m1 == nil then return nil end
+  return tonumber(m1) or tonumber(m2) or tonumber(m3) or tonumber(m4)
 end
 
 local function addXP(level, field, amount)
@@ -348,18 +368,18 @@ local function lootValue(msg)
   if not link then return 0 end
   count = tonumber(count) or 1
   if not GetItemInfo then return 0 end
-  -- try() returns at most 8 values; the sell price is the 11th
-  local r = { pcall(GetItemInfo, link) }
-  if not r[1] then return 0 end
-  if r[2] == nil then return 0, tonumber(link:match("item:(%d+)")), count end
-  return (tonumber(r[12]) or 0) * count
+  local name, _, _, _, _, _, _, _, _, _, sell = try(GetItemInfo, link)
+  if name == nil then return 0, tonumber(link:match("item:(%d+)")), count end
+  return (tonumber(sell) or 0) * count
 end
 
 -- Loot of uncached items: item ID -> count, valued on GET_ITEM_INFO_RECEIVED.
 local lootPending = {}
 local function lootQueue(id, count)
   if not id then return end
+  local wasEmpty = next(lootPending) == nil
   lootPending[id] = (lootPending[id] or 0) + (count or 1)
+  if wasEmpty and eventFrame then pcall(eventFrame.RegisterEvent, eventFrame, "GET_ITEM_INFO_RECEIVED") end
   if C_Item and C_Item.RequestLoadItemDataByID then try(C_Item.RequestLoadItemDataByID, id) end
 end
 
@@ -367,9 +387,10 @@ local function lootReceived(id, ok)
   local count = id and lootPending[id]
   if not count then return end
   lootPending[id] = nil
+  if next(lootPending) == nil and eventFrame then pcall(eventFrame.UnregisterEvent, eventFrame, "GET_ITEM_INFO_RECEIVED") end
   if ok == false then return end
-  local r = { pcall(GetItemInfo, id) }
-  local v = r[1] and (tonumber(r[12]) or 0) * count or 0
+  local sell = select(11, try(GetItemInfo, id))
+  local v = (tonumber(sell) or 0) * count
   if v > 0 then bump("loot", v) end
 end
 
@@ -543,12 +564,16 @@ end
 
 local function goldDay(s)
   s.goldDays = s.goldDays or {}
-  s.goldDays[date("%Y-%m-%d")] = GetMoney and GetMoney() or 0
-  local keys = {}
-  for k in pairs(s.goldDays) do keys[#keys + 1] = k end
-  if #keys > 120 then
-    table.sort(keys)
-    for i = 1, #keys - 120 do s.goldDays[keys[i]] = nil end
+  local today = date("%Y-%m-%d")
+  local isNew = s.goldDays[today] == nil
+  s.goldDays[today] = GetMoney and GetMoney() or 0
+  if isNew then
+    local keys = {}
+    for k in pairs(s.goldDays) do keys[#keys + 1] = k end
+    if #keys > 120 then
+      table.sort(keys)
+      for i = 1, #keys - 120 do s.goldDays[keys[i]] = nil end
+    end
   end
 end
 
@@ -574,9 +599,9 @@ local function itemName(link)
 end
 
 local function itemEquipLoc(link)
-  local r = GetItemInfoInstant and { pcall(GetItemInfoInstant, link) }
-  -- returns ok, itemID, itemType, itemSubType, itemEquipLoc, icon, classID, subclassID
-  if r and r[1] then return r[5], r[2] end
+  -- GetItemInfoInstant returns itemID, itemType, itemSubType, itemEquipLoc, icon, classID, subclassID
+  local id, _, _, loc = try(GetItemInfoInstant, link)
+  if id ~= nil then return loc, id end
   return nil
 end
 
@@ -594,9 +619,9 @@ local function itemLevel(link)
   return (try(GetDetailedItemLevelInfo, link))
 end
 
-local function itemRecord(link, count)
+local function itemRecord(link, count, loc, id)
   if not link then return nil end
-  local loc, id = itemEquipLoc(link)
+  if loc == nil and id == nil then loc, id = itemEquipLoc(link) end
   return {
     id = id,
     link = link,
@@ -651,9 +676,10 @@ end
 
 -- Equippable gear worth listing (not bags, ammo or items that only look equippable).
 local NOT_GEAR = { [""] = true, INVTYPE_BAG = true, INVTYPE_NON_EQUIP_IGNORE = true, INVTYPE_AMMO = true }
-local function isGear(link)
-  local loc = itemEquipLoc(link)
-  return loc ~= nil and not NOT_GEAR[loc]
+local function gearEquipLoc(link)
+  local loc, id = itemEquipLoc(link)
+  if loc ~= nil and not NOT_GEAR[loc] then return loc, id end
+  return nil
 end
 
 -- returns sizes per bag, item counts by id, and equippable gear found
@@ -667,7 +693,10 @@ local function scanBags(first, last)
       local id, count, link = slotItem(bag, slot)
       if id then
         items[id] = (items[id] or 0) + (count or 1)
-        if link and isGear(link) then gear[#gear + 1] = itemRecord(link, count) end
+        if link then
+          local loc, itemID = gearEquipLoc(link)
+          if loc then gear[#gear + 1] = itemRecord(link, count, loc, itemID) end
+        end
       end
     end
   end
@@ -679,18 +708,22 @@ local function addProf(out, name, rank, max)
   if name and rank and max and max > 1 then out[name] = { rank = rank, max = max } end
 end
 
+local function addProfIndex(out, idx)
+  if not idx then return end
+  local name, _, rank, maxRank = try(GetProfessionInfo, idx)
+  addProf(out, name, rank, maxRank)
+end
+
 local function professions()
   local out = {}
   if GetProfessions and GetProfessionInfo then
-    local r = { pcall(GetProfessions) }
-    if r[1] then
-      for i = 2, 7 do
-        if r[i] then
-          local name, _, rank, maxRank = try(GetProfessionInfo, r[i])
-          addProf(out, name, rank, maxRank)
-        end
-      end
-    end
+    local p1, p2, p3, p4, p5, p6 = try(GetProfessions)
+    addProfIndex(out, p1)
+    addProfIndex(out, p2)
+    addProfIndex(out, p3)
+    addProfIndex(out, p4)
+    addProfIndex(out, p5)
+    addProfIndex(out, p6)
   end
   if C_TradeSkillUI and C_TradeSkillUI.GetAllProfessionTradeSkillLines and C_TradeSkillUI.GetProfessionInfoBySkillLineID then
     local lines = try(C_TradeSkillUI.GetAllProfessionTradeSkillLines)
@@ -782,15 +815,6 @@ local function spellName(id)
   return (try(GetSpellInfo, id))
 end
 
-local function funcNames(t)
-  local names = {}
-  if type(t) == "table" then
-    for k, v in pairs(t) do if type(v) == "function" then names[#names + 1] = k end end
-    table.sort(names)
-  end
-  return table.concat(names, ",")
-end
-
 local function talents()
   local out = { trees = {}, list = {} }
   -- old style trees
@@ -800,9 +824,10 @@ local function talents()
       local tree = { talents = {}, points = 0 }
       if GetTalentTabInfo then
         -- the tree name is the first text value (older clients start with it, newer ones with an id)
-        for _, v in ipairs({ try(GetTalentTabInfo, tab) }) do
-          if type(v) == "string" and v ~= "" then tree.name = v; break end
-        end
+        local a, b, c = try(GetTalentTabInfo, tab)
+        if type(a) == "string" and a ~= "" then tree.name = a
+        elseif type(b) == "string" and b ~= "" then tree.name = b
+        elseif type(c) == "string" and c ~= "" then tree.name = c end
       end
       local n = try(GetNumTalents, tab) or 0
       for i = 1, n do
@@ -843,34 +868,50 @@ local function talents()
       end
     end
   end
-  out.debug = {
-    C_SpecializationInfo = funcNames(C_SpecializationInfo),
-    C_ClassTalents = funcNames(C_ClassTalents),
-    GetNumTalents = GetNumTalents and true or false,
-  }
   if UnitCharacterPoints then out.unspent = (try(UnitCharacterPoints, "player")) end
   return out
 end
 
+local function talentCount(talentsData)
+  if type(talentsData) ~= "table" then return 0 end
+  local n = #(talentsData.list or {})
+  if n == 0 then
+    for _, tree in ipairs(talentsData.trees or {}) do
+      n = n + (tree.points or 0)
+    end
+  end
+  return n
+end
+
 ---------------------------------------------------------------- reputation
 -- One reputation API for both client styles: count, row(i) and expand/collapse.
--- row(i) returns a table: name, isHeader, isCollapsed, hasRep and the standing fields.
+-- row(i) returns: name, isHeader, isCollapsed, hasRep, standing, value, min, max.
+local function repRowModern(i)
+  local data = try(C_Reputation.GetFactionDataByIndex, i)
+  if type(data) ~= "table" or not data.name then return nil end
+  return data.name, data.isHeader, data.isCollapsed, data.isHeaderWithRep,
+    data.reaction, data.currentStanding, data.currentReactionThreshold, data.nextReactionThreshold
+end
+
+local function repRowLegacy(i)
+  local name, _, standing, min, max, value, _, _, isHeader, isCollapsed, hasRep = try(GetFactionInfo, i)
+  if not name then return nil end
+  return name, isHeader, isCollapsed, hasRep, standing, value, min, max
+end
+
+local repCache = {}
 local function repAPI()
-  if C_Reputation and C_Reputation.GetNumFactions and C_Reputation.GetFactionDataByIndex then
-    return C_Reputation.GetNumFactions, function(i)
-      local f = try(C_Reputation.GetFactionDataByIndex, i)
-      if type(f) ~= "table" or not f.name then return nil end
-      return { name = f.name, isHeader = f.isHeader, isCollapsed = f.isCollapsed, hasRep = f.isHeaderWithRep,
-        standing = f.reaction, value = f.currentStanding, min = f.currentReactionThreshold, max = f.nextReactionThreshold }
-    end, C_Reputation.ExpandFactionHeader, C_Reputation.CollapseFactionHeader
-  elseif GetNumFactions and GetFactionInfo then
-    return GetNumFactions, function(i)
-      local name, _, standing, min, max, value, _, _, isHeader, isCollapsed, hasRep = try(GetFactionInfo, i)
-      if not name then return nil end
-      return { name = name, isHeader = isHeader, isCollapsed = isCollapsed, hasRep = hasRep,
-        standing = standing, value = value, min = min, max = max }
-    end, ExpandFactionHeader, CollapseFactionHeader
+  if not repCache.resolved then
+    repCache.resolved = true
+    if C_Reputation and C_Reputation.GetNumFactions and C_Reputation.GetFactionDataByIndex then
+      repCache.num, repCache.row, repCache.expand, repCache.collapse =
+        C_Reputation.GetNumFactions, repRowModern, C_Reputation.ExpandFactionHeader, C_Reputation.CollapseFactionHeader
+    elseif GetNumFactions and GetFactionInfo then
+      repCache.num, repCache.row, repCache.expand, repCache.collapse =
+        GetNumFactions, repRowLegacy, ExpandFactionHeader, CollapseFactionHeader
+    end
   end
+  return repCache.num, repCache.row, repCache.expand, repCache.collapse
 end
 
 -- The game lists only the rows the player has expanded: open every header for the
@@ -879,40 +920,50 @@ local function reputation()
   local out = {}
   local numFn, row, expand, collapse = repAPI()
   if not numFn then return out end
-  local reopened = {}
-  if expand then
+  local repFrame = _G["ReputationFrame"]
+  local canToggle = expand and not (InCombatLockdown and InCombatLockdown())
+    and not (repFrame and repFrame:IsShown())
+  local reopened
+  if canToggle then
+    reopened = {}
     local i, guard = 1, 0
     while i <= (try(numFn) or 0) and guard < 500 do
       guard = guard + 1
-      local f = row(i)
-      if f and f.isHeader and f.isCollapsed then
-        reopened[f.name] = true
+      local name, isHeader, isCollapsed = row(i)
+      if name and isHeader and isCollapsed then
+        reopened[name] = true
+        repCache.scanning = true
         try(expand, i)
+        repCache.scanning = false
       end
       i = i + 1
     end
   end
   for i = 1, try(numFn) or 0 do
-    local f = row(i)
+    local name, isHeader, _, hasRep, standing, value, min, max = row(i)
     -- headers with a standing of their own (hasRep) are factions too
-    if f and (not f.isHeader or f.hasRep) then
-      out[#out + 1] = { name = f.name, standing = f.standing, value = f.value, min = f.min, max = f.max }
+    if name and (not isHeader or hasRep) then
+      out[#out + 1] = { name = name, standing = standing, value = value, min = min, max = max }
     end
   end
-  if collapse and next(reopened) then
+  if collapse and reopened and next(reopened) then
     for i = try(numFn) or 0, 1, -1 do
-      local f = row(i)
-      if f and f.isHeader and reopened[f.name] and not f.isCollapsed then try(collapse, i) end
+      local name, isHeader, isCollapsed = row(i)
+      if name and isHeader and reopened[name] and not isCollapsed then
+        repCache.scanning = true
+        try(collapse, i)
+        repCache.scanning = false
+      end
     end
   end
   return out
 end
 
 ---------------------------------------------------------------- character sheet
+local STAT_NAMES = { "str", "agi", "sta", "int", "spi" }
 local function sheet()
   local t = {}
-  local names = { "str", "agi", "sta", "int", "spi" }
-  for i, n in ipairs(names) do
+  for i, n in ipairs(STAT_NAMES) do
     local base, total = try(UnitStat, "player", i)
     t[n] = total or base
   end
@@ -961,31 +1012,6 @@ local function spells()
   return out
 end
 
----------------------------------------------------------------- api info
-local function apiInfo()
-  local t = {}
-  local function has(name, v) t[name] = v and true or false end
-  has("GetNumTalentTabs", GetNumTalentTabs)
-  has("GetTalentInfo", GetTalentInfo)
-  has("GetTalentTabInfo", GetTalentTabInfo)
-  has("C_ClassTalents", C_ClassTalents)
-  has("C_Traits", C_Traits)
-  has("C_SpecializationInfo", C_SpecializationInfo)
-  has("C_Item.GetItemStats", C_Item and C_Item.GetItemStats)
-  has("GetItemStats", GetItemStats)
-  has("C_Reputation.GetFactionDataByIndex", C_Reputation and C_Reputation.GetFactionDataByIndex)
-  has("GetFactionInfo", GetFactionInfo)
-  has("C_SpellBook.GetSpellBookItemInfo", C_SpellBook and C_SpellBook.GetSpellBookItemInfo)
-  has("GetSpellBookItemName", GetSpellBookItemName)
-  has("C_TradeSkillUI.GetAllRecipeIDs", C_TradeSkillUI and C_TradeSkillUI.GetAllRecipeIDs)
-  has("C_Bank", C_Bank)
-  if GetBuildInfo then
-    local v, build, _, toc = try(GetBuildInfo)
-    t.build = tostring(v) .. " " .. tostring(build) .. " toc " .. tostring(toc)
-  end
-  return t
-end
-
 ---------------------------------------------------------------- VendorFloor (optional)
 -- If Bencepo's VendorFloor is installed, its ledger (account-wide) is read through
 -- VendorFloor_Ledger(). Without it nothing changes.
@@ -1025,17 +1051,7 @@ local function sessionSave(cur, closed)
   local list = s.sessions
   if list[#list] and list[#list].date == rec.date then list[#list] = rec else list[#list + 1] = rec end
   -- older sessions are summed up per month instead of being dropped
-  while #list > 30 do
-    local old = table.remove(list, 1)
-    s.sessionMonths = s.sessionMonths or {}
-    local m = tostring(old.date or ""):sub(1, 7)
-    local agg = s.sessionMonths[m] or { sessions = 0, minutes = 0, xp = 0, copper = 0 }
-    agg.sessions = agg.sessions + 1
-    agg.minutes = agg.minutes + (old.minutes or 0)
-    agg.xp = agg.xp + (old.xpGained or 0)
-    agg.copper = agg.copper + (old.copperDelta or 0)
-    s.sessionMonths[m] = agg
-  end
+  while #list > 30 do archiveSession(s, table.remove(list, 1)) end
 end
 
 local function sessionExpired(cur)
@@ -1142,7 +1158,10 @@ local function scanBank()
         local id, count, link = slotItem(bag, slot)
         if id then
           items[id] = (items[id] or 0) + (count or 1)
-          if link and isGear(link) then gear[#gear + 1] = itemRecord(link, count) end
+          if link then
+            local loc, itemID = gearEquipLoc(link)
+            if loc then gear[#gear + 1] = itemRecord(link, count, loc, itemID) end
+          end
         end
       end
     end
@@ -1223,17 +1242,16 @@ local function thousands(n)
 end
 
 ---------------------------------------------------------------- snapshot
--- The completed quest list is long: read at login and after a quest turn-in only.
-local questsDirty = true
+-- Rarely-changing subsystems are only re-scanned when their events mark them dirty
+-- (all start dirty so the initial snapshot captures everything).
+local dirty = { quests = true, rep = true, spells = true, prof = true, talents = true, equip = true, bags = true }
 
 -- Returns the character data, or nil and "not ready" while the game has not loaded the
 -- character's values yet (a moment after login).
-local function snapshot()
+local function snapshot(fromLogout)
   local _, name, realm = charKey()
   if not xpReady() then return nil, "not ready" end
   local s = store()
-  local lastBag = lastBagID()
-  local sizes, items, gear, free = scanBags(0, lastBag)
   s.version = VERSION
   s.ts = time()
   s.date = date("%Y-%m-%d %H:%M")
@@ -1248,51 +1266,81 @@ local function snapshot()
   s.zone = GetRealZoneText and GetRealZoneText() or ""
   s.subzone = GetSubZoneText and GetSubZoneText() or ""
   s.hearth = try(GetBindLocation)
-  s.bags = { backpack = sizes[0], sizes[1], sizes[2], sizes[3], sizes[4] }
-  s.reagentBag = lastBag >= 5 and sizes[5] or nil
-  s.freeSlots = free
-  s.items = items
-  s.bagGear = gear
-  s.equipped = equipped()
-  s.professions = professions()
-  s.questLog = questLog()
-  if questsDirty or not s.completedQuests then
-    s.completedQuests = completedQuests()
-    questsDirty = false
+  if dirty.bags or not s.bags then
+    local lastBag = lastBagID()
+    local sizes, items, gear, free = scanBags(0, lastBag)
+    s.bags = { backpack = sizes[0], sizes[1], sizes[2], sizes[3], sizes[4] }
+    s.reagentBag = lastBag >= 5 and sizes[5] or nil
+    s.freeSlots = free
+    s.items = items
+    s.bagGear = gear
+    dirty.bags = false
   end
-  s.talents = talents()
-  s.reputation = reputation()
-  s.libraryBooks = libraryBooks()
+  if dirty.equip or not s.equipped then
+    s.equipped = equipped()
+    dirty.equip = false
+  end
+  if dirty.prof or not s.professions then
+    s.professions = professions()
+    dirty.prof = false
+  end
+  s.questLog = questLog()
+  if dirty.quests or not s.completedQuests or not s.libraryBooks then
+    s.completedQuests = completedQuests()
+    s.libraryBooks = libraryBooks()
+    dirty.quests = false
+  end
+  if dirty.talents or not s.talents then
+    s.talents = talents()
+    dirty.talents = false
+  end
+  if dirty.rep or not s.reputation then
+    s.reputation = reputation()
+    dirty.rep = false
+  end
   s.vendorFloor = nil -- read from VendorFloor at export time instead of copying its ledger here
   s.sheet = sheet()
-  s.spells = spells()
-  s.api = apiInfo()
+  if dirty.spells or not s.spells then
+    s.spells = spells()
+    dirty.spells = false
+  end
   trackXP()
-  sessionSave(sessionGet())
-  clockTick()
+  if not fromLogout then
+    sessionSave(sessionGet())
+    clockTick()
+  end
   levelInit()
   goldDay(s)
   return s
 end
 
--- A snapshot scans bags, gear, quests, talents, reputation and the spellbook. Frequent
--- events (looting, selling, money, XP) only mark it as stale; it is then rebuilt at most
--- once a minute by the clock ticker, and always at logout and when the export opens.
+-- A snapshot scans dirty subsystems. Frequent events (looting, selling, money, XP) only
+-- mark it as stale; it is then rebuilt at most once a minute by the clock ticker (deferred
+-- until combat ends if in combat), and always at logout and when the export opens.
 -- Level-ups and zone changes rebuild it two seconds later (one run for a burst of events).
 local snapDirty, snapPending = false, false
 local function scheduleSnapshot()
   snapDirty = true
 end
-local function flushSnapshot(force)
+local function flushSnapshot(force, fromLogout)
   if not (snapDirty or force) then return end
+  if not force and (inCombat or (InCombatLockdown and InCombatLockdown())) then
+    snapDirty = true
+    return
+  end
   snapDirty = false
-  pcall(snapshot)
+  pcall(snapshot, fromLogout)
 end
 local function snapshotSoon()
   if snapPending then return end
   snapPending = true
   C_Timer.After(2, function()
-    snapPending, snapDirty = false, false
+    snapPending = false
+    if inCombat or (InCombatLockdown and InCombatLockdown()) then
+      snapDirty = true
+      return
+    end
+    snapDirty = false
     pcall(snapshot)
   end)
 end
@@ -1300,6 +1348,7 @@ end
 ---------------------------------------------------------------- data from older versions
 local function migrate()
   local s = store()
+  s.api = nil
   -- recipes saved without a profession name (before 1.5.4) are copies of another profession
   if s.recipes then s.recipes[""], s.recipes["?"] = nil, nil end
   -- XP tracking moved out of the session (1.4)
@@ -1323,61 +1372,94 @@ local function migrate()
 end
 
 ---------------------------------------------------------------- events
-local f = CreateFrame("Frame")
+eventFrame = CreateFrame("Frame")
 local EVENTS = { "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_ENTERING_WORLD", "PLAYER_MONEY",
-  "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "SKILL_LINES_CHANGED", "ZONE_CHANGED_NEW_AREA", "PLAYER_LEVEL_UP",
-  "PLAYER_XP_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "CHARACTER_POINTS_CHANGED", "BANKFRAME_OPENED",
-  "PLAYERBANKSLOTS_CHANGED", "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "PLAYER_DEAD",
-  "CHAT_MSG_COMBAT_XP_GAIN", "CHAT_MSG_SYSTEM", "MERCHANT_SHOW", "MERCHANT_CLOSED", "UPDATE_INVENTORY_DURABILITY",
+  "BAG_UPDATE_DELAYED", "PLAYER_EQUIPMENT_CHANGED", "SKILL_LINES_CHANGED", "SPELLS_CHANGED", "UPDATE_FACTION",
+  "ZONE_CHANGED_NEW_AREA", "PLAYER_LEVEL_UP", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "CHARACTER_POINTS_CHANGED",
+  "PLAYER_TALENT_UPDATE", "TRAIT_CONFIG_UPDATED", "BANKFRAME_OPENED", "BANKFRAME_CLOSED",
+  "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "PLAYER_DEAD",
+  "CHAT_MSG_COMBAT_XP_GAIN", "CHAT_MSG_SYSTEM", "MERCHANT_SHOW", "MERCHANT_CLOSED",
   "CHAT_MSG_LOOT", "PLAYER_CONTROL_LOST", "PLAYER_CONTROL_GAINED", "PLAYER_ALIVE", "PLAYER_UNGHOST",
-  "GET_ITEM_INFO_RECEIVED", "BANKFRAME_CLOSED" }
-for _, ev in ipairs(EVENTS) do pcall(f.RegisterEvent, f, ev) end
+  "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }
+for _, ev in ipairs(EVENTS) do pcall(eventFrame.RegisterEvent, eventFrame, ev) end
+if eventFrame.RegisterUnitEvent then
+  if not pcall(eventFrame.RegisterUnitEvent, eventFrame, "PLAYER_XP_UPDATE", "player") then
+    pcall(eventFrame.RegisterEvent, eventFrame, "PLAYER_XP_UPDATE")
+  end
+else
+  pcall(eventFrame.RegisterEvent, eventFrame, "PLAYER_XP_UPDATE")
+end
 
 -- Moving items in the bank and crafting fire these events many times in a row:
 -- one scan a second after the first of a burst.
 local soonPending = {}
 local function soon(fn)
   if soonPending[fn] then return end
-  soonPending[fn] = true
-  C_Timer.After(1, function()
-    soonPending[fn] = nil
+  if C_Timer and C_Timer.After then
+    soonPending[fn] = true
+    C_Timer.After(1, function()
+      soonPending[fn] = nil
+      pcall(fn)
+    end)
+  else
     pcall(fn)
-  end)
+  end
 end
-f:SetScript("OnEvent", function(_, event, ...)
+
+local function onMinuteTick()
+  pcall(clockTick)
+  flushSnapshot()
+end
+
+local function saveLogoutSession()
+  local cur = store().session
+  if cur and not sessionExpired(cur) then sessionSave(cur, true) end
+end
+
+local function onQuestTurnedInCount()
+  local s = store()
+  s.questsByLevel = s.questsByLevel or {}
+  local key = tostring(UnitLevel("player") or 0)
+  s.questsByLevel[key] = (s.questsByLevel[key] or 0) + 1
+  bump("quests")
+end
+
+eventFrame:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
+    inCombat = (InCombatLockdown and InCombatLockdown()) or false
+    dirty.rep = true
     pcall(mergeEmptyRealm)
     pcall(migrate)
     pcall(snapshot)
     clockZone = currentZone()
-    C_Timer.NewTicker(60, function()
-      pcall(clockTick)
-      flushSnapshot()
-    end)
+    C_Timer.NewTicker(60, onMinuteTick)
+    if onLoginUI then pcall(onLoginUI) end
+    pcall(eventFrame.UnregisterEvent, eventFrame, "PLAYER_LOGIN")
   elseif event == "PLAYER_LOGOUT" then
     pcall(clockTick)
     pcall(flightCheck)
     -- the session as of its last activity, in case the values are gone already
-    pcall(function()
-      local cur = store().session
-      if cur and not sessionExpired(cur) then sessionSave(cur, true) end
-    end)
-    flushSnapshot(true)
+    pcall(saveLogoutSession)
+    flushSnapshot(true, true)
+  elseif event == "PLAYER_REGEN_DISABLED" then
+    inCombat = true
+    if hudSettings and hudSettings().hideInCombat and hudRefreshShown then pcall(hudRefreshShown) end
+  elseif event == "PLAYER_REGEN_ENABLED" then
+    inCombat = false
+    if hudSettings and hudSettings().hideInCombat and hudRefreshShown then pcall(hudRefreshShown) end
+    if snapDirty then flushSnapshot() end
   elseif event == "PLAYER_LEVEL_UP" then
+    dirty.spells = true
+    dirty.talents = true
     pcall(onLevelUp, ...)
     pcall(trackXP)
+    if hudUpdate then pcall(hudUpdate) end
     snapshotSoon()
   elseif event == "QUEST_TURNED_IN" then
     local questID, xpReward = ...
     pcall(addXP, UnitLevel("player"), "quest", xpReward)
-    pcall(function()
-      local s = store()
-      s.questsByLevel = s.questsByLevel or {}
-      local key = tostring(UnitLevel("player") or 0)
-      s.questsByLevel[key] = (s.questsByLevel[key] or 0) + 1
-      bump("quests")
-    end)
-    questsDirty = true
+    pcall(onQuestTurnedInCount)
+    dirty.quests = true
     if BOOK_IDS[questID] then
       -- the completed flag can lag behind the event a moment
       local function report()
@@ -1403,7 +1485,7 @@ f:SetScript("OnEvent", function(_, event, ...)
     pcall(lootReceived, ...)
   elseif event == "PLAYER_CONTROL_LOST" or event == "PLAYER_CONTROL_GAINED" then
     -- the taxi flag can lag behind the control event a moment
-    if C_Timer and C_Timer.After then C_Timer.After(1, function() pcall(flightCheck) end) else pcall(flightCheck) end
+    soon(flightCheck)
   elseif event == "PLAYER_ALIVE" or event == "PLAYER_UNGHOST" then
     pcall(ghostCheck)
     pcall(dungeonCheck)
@@ -1425,31 +1507,62 @@ f:SetScript("OnEvent", function(_, event, ...)
   elseif event == "MERCHANT_SHOW" then
     merchantOpen = true
     repairCost = try(GetRepairAllCost)
+    pcall(eventFrame.RegisterEvent, eventFrame, "UPDATE_INVENTORY_DURABILITY")
   elseif event == "MERCHANT_CLOSED" then
     merchantOpen, repairCost = false, nil
+    pcall(eventFrame.UnregisterEvent, eventFrame, "UPDATE_INVENTORY_DURABILITY")
   elseif event == "UPDATE_INVENTORY_DURABILITY" then
     pcall(repairCheck)
   elseif event == "PLAYER_XP_UPDATE" then
     pcall(trackXP)
+    if hudUpdate then pcall(hudUpdate) end
     scheduleSnapshot()
   elseif event == "BANKFRAME_OPENED" then
     bankOpen = true
+    pcall(eventFrame.RegisterEvent, eventFrame, "PLAYERBANKSLOTS_CHANGED")
     pcall(scanBank)
   elseif event == "BANKFRAME_CLOSED" then
     bankOpen = false
+    pcall(eventFrame.UnregisterEvent, eventFrame, "PLAYERBANKSLOTS_CHANGED")
   elseif event == "PLAYERBANKSLOTS_CHANGED" then
     if bankOpen then soon(scanBank) end
-  elseif event == "TRADE_SKILL_SHOW" then
-    pcall(scanRecipes)
-  elseif event == "TRADE_SKILL_LIST_UPDATE" then
+  elseif event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_LIST_UPDATE" then
     soon(scanRecipes)
+  elseif event == "BAG_UPDATE_DELAYED" then
+    dirty.bags = true
+    scheduleSnapshot()
+  elseif event == "PLAYER_EQUIPMENT_CHANGED" then
+    dirty.equip = true
+    scheduleSnapshot()
+  elseif event == "SKILL_LINES_CHANGED" then
+    dirty.prof = true
+    scheduleSnapshot()
+  elseif event == "SPELLS_CHANGED" then
+    dirty.spells = true
+    scheduleSnapshot()
+  elseif event == "UPDATE_FACTION" then
+    if not repCache.scanning then
+      dirty.rep = true
+      scheduleSnapshot()
+    end
+  elseif event == "CHARACTER_POINTS_CHANGED" or event == "PLAYER_TALENT_UPDATE" or event == "TRAIT_CONFIG_UPDATED" then
+    dirty.talents = true
+    scheduleSnapshot()
   else
     scheduleSnapshot()
   end
 end)
 
 ---------------------------------------------------------------- text export (copy and paste into the app)
-local function A(t) return setmetatable(t or {}, { __arr = true }) end
+local ARR_MT = { __arr = true }
+local function A(t) return setmetatable(t or {}, ARR_MT) end
+
+local function escChar(c)
+  if c == '"' then return '\\"'
+  elseif c == "\\" then return "\\\\"
+  elseif c == "\n" then return "\\n"
+  else return string.format("\\u%04x", c:byte()) end
+end
 
 local function enc(v, out)
   local t = type(v)
@@ -1457,13 +1570,10 @@ local function enc(v, out)
   elseif t == "boolean" then out[#out + 1] = v and "true" or "false"
   elseif t == "number" then
     if v ~= v or v == math.huge or v == -math.huge then out[#out + 1] = "null"
-    elseif v == math.floor(v) then out[#out + 1] = string.format("%d", v)
+    elseif v == math.floor(v) then out[#out + 1] = v == 0 and "0" or string.format("%.0f", v)
     else out[#out + 1] = (string.format("%.2f", v):gsub("0+$", ""):gsub("%.$", "")) end
   elseif t == "string" then
-    out[#out + 1] = '"' .. v:gsub('[%c"\\]', function(c)
-      if c == '"' then return '\\"' elseif c == "\\" then return "\\\\" elseif c == "\n" then return "\\n"
-      else return string.format("\\u%04x", c:byte()) end
-    end) .. '"'
+    out[#out + 1] = '"' .. v:gsub('[%c"\\]', escChar) .. '"'
   elseif t == "table" then
     local n = #v
     local mt = getmetatable(v)
@@ -1730,18 +1840,23 @@ local HUD_LINES = {
   { key = "next", label = "Time to the next level" },
   { key = "cap", label = "Time to the level cap" },
 }
+local HUD_KNOWN = {}
+for _, l in ipairs(HUD_LINES) do HUD_KNOWN[l.key] = true end
 local HUD_DEFAULTS = { scale = 1, alpha = 0.6, opacity = 1, locked = false, hideInCombat = false, align = "LEFT",
   lines = {}, order = {}, sizes = {} }
 local HUD_ALIGN = { LEFT = true, CENTER = true, RIGHT = true }
 local HUD_SIZE_MIN, HUD_SIZE_MAX, HUD_SIZE_DEFAULT = 8, 20, 10 -- font size per line
 
-local function hudSettings()
+local hudCfg, normalizedOrder
+hudSettings = function()
+  if hudCfg and LevelTrailSettings and LevelTrailSettings.tracker == hudCfg then return hudCfg end
   LevelTrailSettings = type(LevelTrailSettings) == "table" and LevelTrailSettings or {}
   local t = type(LevelTrailSettings.tracker) == "table" and LevelTrailSettings.tracker or {}
   LevelTrailSettings.tracker = t
   for k, v in pairs(HUD_DEFAULTS) do
     if t[k] == nil then t[k] = type(v) == "table" and {} or v end
   end
+  hudCfg = t
   return t
 end
 
@@ -1752,16 +1867,17 @@ end
 
 -- The lines in the order chosen in the settings; lines added later go to the end.
 local function lineOrder()
-  local t, seen, out = hudSettings(), {}, {}
-  local known = {}
-  for _, l in ipairs(HUD_LINES) do known[l.key] = true end
+  local t = hudSettings()
+  if normalizedOrder and t.order == normalizedOrder then return normalizedOrder end
+  local seen, out = {}, {}
   for _, key in ipairs(t.order) do
-    if known[key] and not seen[key] then seen[key] = true; out[#out + 1] = key end
+    if HUD_KNOWN[key] and not seen[key] then seen[key] = true; out[#out + 1] = key end
   end
   for _, l in ipairs(HUD_LINES) do
     if not seen[l.key] then out[#out + 1] = l.key end
   end
   t.order = out
+  normalizedOrder = out
   return out
 end
 
@@ -1832,7 +1948,7 @@ end
 
 -- One text per line, stacked in the chosen order, each in its own size.
 local HUD_GAP = 2
-local function hudUpdate()
+hudUpdate = function()
   if not (hud and hud:IsShown()) then return end
   local ok, lines = pcall(hudLineList)
   if not ok then lines = { { key = "error", text = "LevelTrail: " .. tostring(lines) } }
@@ -1840,30 +1956,52 @@ local function hudUpdate()
   local t = hudSettings()
   local align = HUD_ALIGN[t.align] and t.align or "LEFT"
   local font = hud.font
-  local height, prev = 16, nil
-  for i, l in ipairs(lines) do
+  local prevCount = hud.rowCount or 0
+  local n = #lines
+  local changed = n ~= prevCount
+  for i = 1, n do
+    local l = lines[i]
     local fs = hud.rows[i]
     if not fs then
       fs = hud:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      if i > 1 then
+        fs:SetPoint("TOPLEFT", hud.rows[i - 1], "BOTTOMLEFT", 0, -HUD_GAP)
+        fs:SetPoint("TOPRIGHT", hud.rows[i - 1], "BOTTOMRIGHT", 0, -HUD_GAP)
+      else
+        fs:SetPoint("TOPLEFT", 8, -8)
+        fs:SetPoint("TOPRIGHT", -8, -8)
+      end
       hud.rows[i] = fs
+      changed = true
     end
-    fs:ClearAllPoints()
-    if prev then
-      fs:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -HUD_GAP)
-      fs:SetPoint("TOPRIGHT", prev, "BOTTOMRIGHT", 0, -HUD_GAP)
-    else
-      fs:SetPoint("TOPLEFT", 8, -8)
-      fs:SetPoint("TOPRIGHT", -8, -8)
+    local size = lineSize(l.key)
+    if font and hud.rowSize[i] ~= size then
+      fs:SetFont(font, size, hud.fontFlags)
+      hud.rowSize[i] = size
+      changed = true
     end
-    if font then fs:SetFont(font, lineSize(l.key), hud.fontFlags) end
-    fs:SetJustifyH(align)
-    fs:SetText(l.text)
-    fs:Show()
-    height = height + fs:GetStringHeight() + (prev and HUD_GAP or 0)
-    prev = fs
+    if hud.rowAlign[i] ~= align then
+      fs:SetJustifyH(align)
+      hud.rowAlign[i] = align
+    end
+    if hud.rowText[i] ~= l.text then
+      fs:SetText(l.text)
+      hud.rowText[i] = l.text
+      changed = true
+    end
+    if i > prevCount then fs:Show() end
   end
-  for i = #lines + 1, #hud.rows do hud.rows[i]:Hide() end
-  hud:SetHeight(height)
+  if n < prevCount then
+    for i = n + 1, prevCount do hud.rows[i]:Hide() end
+  end
+  hud.rowCount = n
+  if changed then
+    local height = 16
+    for i = 1, n do
+      height = height + hud.rows[i]:GetStringHeight() + (i > 1 and HUD_GAP or 0)
+    end
+    hud:SetHeight(height)
+  end
 end
 
 local editMode = false -- the game's Edit Mode is open: the tracker shows and moves there
@@ -1883,15 +2021,20 @@ local function hudApplyLook()
     end
   end
   if hud.editLabel then hud.editLabel:SetShown(editMode) end
-  hud.over = nil -- the opacity is set again on the next check
+  local o = tonumber(t.opacity) or 1
+  if editMode or o >= 1 then
+    hud.over = true
+    hud:SetAlpha(1)
+  else
+    hud.over = nil -- the opacity is set again on the next hover check
+  end
   -- locked: clicks go through to the game world (Edit Mode can always move it)
   hud:EnableMouse(editMode or not t.locked)
   hudUpdate()
 end
 
-local inCombat = false
 -- Shown when the character wants it and it is not hidden for combat, and always in Edit Mode.
-local function hudRefreshShown()
+hudRefreshShown = function()
   local st = store().hud
   local want = editMode or (st and st.shown and not (inCombat and hudSettings().hideInCombat))
   if want then
@@ -2019,7 +2162,7 @@ local function hudCreate()
       insets = { left = 3, right = 3, top = 3, bottom = 3 } })
     win:SetBackdropColor(0, 0, 0, 0.6)
   end
-  win.rows = {}
+  win.rows, win.rowText, win.rowSize, win.rowAlign, win.rowCount = {}, {}, {}, {}, 0
   win.editLabel = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   win.editLabel:SetPoint("BOTTOM", win, "TOP", 0, 4)
   win.editLabel:SetText("LevelTrail")
@@ -2034,20 +2177,22 @@ local function hudCreate()
     win:ClearAllPoints()
     win:SetPoint(st.point, UIParent, st.rel or st.point, st.x or 0, st.y or 0)
   end
-  local acc = 0
+  local acc, accOver = 0, 0
   -- the whole window (text too) at its opacity, fully visible while the mouse is over it
   -- (also when locked: IsMouseOver needs no mouse input) and in Edit Mode
-  local accOver = 0
   win:SetScript("OnUpdate", function(self, elapsed)
-    acc, accOver = acc + elapsed, accOver + elapsed
-    if acc >= 2 then acc = 0; hudUpdate() end
+    acc = acc + elapsed
+    if acc >= 5 then acc = 0; hudUpdate() end
+    if editMode then return end
+    local o = tonumber(hudSettings().opacity) or 1
+    if o >= 1 then return end
+    accOver = accOver + elapsed
     if accOver >= 0.1 then
       accOver = 0
-      local over = editMode or self:IsMouseOver()
+      local over = self:IsMouseOver()
       if over ~= self.over then
         self.over = over
-        local o = tonumber(hudSettings().opacity) or 1
-        self:SetAlpha(over and 1 or math.min(math.max(o, 0), 1))
+        self:SetAlpha(over and 1 or math.max(o, 0))
       end
     end
   end)
@@ -2180,10 +2325,12 @@ local function showOptions()
   win:Show()
 end
 
-local hudEvents = CreateFrame("Frame")
-hudEvents:RegisterEvent("PLAYER_LOGIN")
-hudEvents:RegisterEvent("PLAYER_REGEN_DISABLED")
-hudEvents:RegisterEvent("PLAYER_REGEN_ENABLED")
+local function hudToggle()
+  local st = store().hud
+  hudShow(not (st and st.shown))
+  if optionsWin then optionsWin:Refresh() end
+end
+
 -- The game's Edit Mode: the tracker shows there and can be placed like the game's own frames.
 local function setEditMode(on)
   editMode = on
@@ -2193,24 +2340,13 @@ local function setEditMode(on)
 end
 local function hookEditMode()
   if EventRegistry and EventRegistry.RegisterCallback then
-    EventRegistry:RegisterCallback("EditMode.Enter", function() pcall(setEditMode, true) end, hudEvents)
-    EventRegistry:RegisterCallback("EditMode.Exit", function() pcall(setEditMode, false) end, hudEvents)
+    EventRegistry:RegisterCallback("EditMode.Enter", function() pcall(setEditMode, true) end, eventFrame)
+    EventRegistry:RegisterCallback("EditMode.Exit", function() pcall(setEditMode, false) end, eventFrame)
   elseif EditModeManagerFrame and hooksecurefunc then
     hooksecurefunc(EditModeManagerFrame, "EnterEditMode", function() pcall(setEditMode, true) end)
     hooksecurefunc(EditModeManagerFrame, "ExitEditMode", function() pcall(setEditMode, false) end)
   end
 end
-
-hudEvents:SetScript("OnEvent", function(_, event)
-  if event == "PLAYER_LOGIN" then
-    pcall(hookEditMode)
-    local st = store().hud
-    if st and st.shown then pcall(hudShow, true) end
-  else
-    inCombat = event == "PLAYER_REGEN_DISABLED"
-    if hudSettings().hideInCombat then pcall(hudRefreshShown) end
-  end
-end)
 
 ---------------------------------------------------------------- minimap button
 -- Minimap icon through LibDataBroker and LibDBIcon (shipped in Libs), so minimap button
@@ -2234,7 +2370,7 @@ local minimapButton
 -- Left-click: settings, like every Bencepo addon. Right-click: export. Shift-click: tracker on/off.
 local function minimapClick(button)
   if IsShiftKeyDown and IsShiftKeyDown() then
-    local okH, errH = pcall(hudShow, not (hud and hud:IsShown()))
+    local okH, errH = pcall(hudToggle)
     if not okH then print("|cffff5555LevelTrail: tracker failed:|r " .. tostring(errH)) end
   elseif button == "RightButton" then
     SlashCmdList["LEVELTRAIL"]("")
@@ -2278,13 +2414,14 @@ setMinimapShown = function(show)
   return true
 end
 
-local minimapEvents = CreateFrame("Frame")
-minimapEvents:RegisterEvent("PLAYER_LOGIN")
-minimapEvents:SetScript("OnEvent", function()
+onLoginUI = function()
+  pcall(hookEditMode)
+  local st = store().hud
+  if st and st.shown then pcall(hudShow, true) end
   local ok, b = pcall(MinimapIcon, "LevelTrail", "Interface\\AddOns\\LevelTrail\\Icons\\minimap",
     minimapSettings(), minimapClick, minimapTooltip)
   if ok then minimapButton = b else print("|cffff5555LevelTrail: minimap button failed:|r " .. tostring(b)) end
-end)
+end
 
 -- Entry in the game's addon menu (the compartment next to the minimap), if the client has one.
 -- Depending on the client the second argument is the button name or a table with it.
@@ -2328,8 +2465,7 @@ SLASH_LEVELTRAIL2 = "/lt"
 SlashCmdList["LEVELTRAIL"] = function(msg)
   msg = (msg or ""):lower():match("^%s*(.-)%s*$")
   if msg == "hud" then
-    local on = not (hud and hud:IsShown())
-    local okH, errH = pcall(hudShow, on)
+    local okH, errH = pcall(hudToggle)
     if not okH then print("|cffff5555LevelTrail: tracker failed:|r " .. tostring(errH)) end
     return
   elseif msg == "options" or msg == "config" then
@@ -2376,6 +2512,7 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
   end
   -- export and chat summary: refresh the parts that only load with their window open, then everything
   pcall(scanRecipes)
+  dirty.rep = true
   local ok, s, why = pcall(snapshot)
   if ok and not s and why == "not ready" then
     print("|cff7fbf3fLevelTrail:|r the game has not loaded your character yet. Try again in a moment.")
@@ -2384,7 +2521,7 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
   if not ok or not s then print("|cffff5555LevelTrail: snapshot failed:|r " .. tostring(s)) return end
   local g = math.floor(s.copper / 10000)
   local sv = math.floor((s.copper % 10000) / 100)
-  local tal = #s.talents.list
+  local tal = talentCount(s.talents)
   local lb = s.libraryBooks
   local summary = "Level " .. tostring(s.level) .. ", " .. g .. "g " .. sv .. "s, " .. tostring(s.zone) ..
     (lb and (", library books " .. lb.count .. "/" .. lb.total) or "") .. " | " ..
@@ -2409,9 +2546,11 @@ end
 
 -- For the automated tests (tests/*_spec.lua, run with busted outside the game); unused in the game.
 ns.test = {
-  toPattern = toPattern, numberIn = numberIn, lootValue = lootValue, xpForLevel = xpForLevel,
+  try = try, toPattern = toPattern, numberIn = numberIn, lootValue = lootValue, xpForLevel = xpForLevel,
   pace = pace, hm = hm, thousands = thousands, trackXP = trackXP, sessionGet = sessionGet,
-  sessionSave = sessionSave, bump = bump, onDeath = onDeath, buildExport = buildExport, enc = enc, mergeEmptyRealm = mergeEmptyRealm, charKey = charKey,
+  sessionSave = sessionSave, bump = bump, onDeath = onDeath, buildExport = buildExport, enc = enc,
+  mergeRecord = mergeRecord, mergeEmptyRealm = mergeEmptyRealm, charKey = charKey,
   migrate = migrate, bankBagIDs = bankBagIDs, store = store, lootQueue = lootQueue, lootReceived = lootReceived,
   lineOrder = lineOrder, moveLine = moveLine, lineSize = lineSize, hudSettings = hudSettings, snapOffset = snapOffset,
+  reputation = reputation, talentCount = talentCount, goldDay = goldDay, snapshot = snapshot, dirty = dirty,
 }

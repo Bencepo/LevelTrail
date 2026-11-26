@@ -224,6 +224,154 @@ describe("LevelTrail", function()
 			assert.truthy(text:find('"b":"x\\"y"', 1, true))
 			assert.truthy(text:find('"a":[1,2]', 1, true))
 		end)
+		it("encodes integers above 2^31 without 32-bit overflow", function()
+			local out = {}
+			T.enc({ big = 5000000000, neg = -5000000000, zero = -0.0 }, out)
+			local text = table.concat(out)
+			assert.truthy(text:find('"big":5000000000', 1, true))
+			assert.truthy(text:find('"neg":-5000000000', 1, true))
+			assert.truthy(text:find('"zero":0', 1, true))
+		end)
+	end)
+
+	describe("try", function()
+		it("returns more than 8 values including nil gaps", function()
+			local function eleven()
+				return "Orgrimmar", nil, 6, 9000, 21000, 14200, false, false, true, false, true
+			end
+			local a, b, c, d, e, f, g, h, i, j, k = T.try(eleven)
+			assert.equal("Orgrimmar", a)
+			assert.is_nil(b)
+			assert.equal(6, c)
+			assert.equal(9000, d)
+			assert.equal(21000, e)
+			assert.equal(14200, f)
+			assert.is_false(g)
+			assert.is_false(h)
+			assert.is_true(i)
+			assert.is_false(j)
+			assert.is_true(k)
+		end)
+		it("returns nil on non-function or error", function()
+			assert.is_nil(T.try(nil))
+			assert.is_nil(T.try(function() error("boom") end))
+		end)
+	end)
+
+	describe("reputation", function()
+		it("reads all 11 GetFactionInfo values and restores collapsed headers", function()
+			local collapsed = true
+			local toggled = 0
+			local function rows()
+				if collapsed then
+					return { { "Horde", "", 4, 0, 3000, 0, false, false, true, true, false } }
+				end
+				return {
+					{ "Horde", "", 4, 0, 3000, 0, false, false, true, false, false },
+					{ "Orgrimmar", "", 6, 9000, 21000, 14200, false, false, false, false, false },
+					{ "Guild", "", 5, 3000, 9000, 4000, false, false, true, false, true },
+				}
+			end
+			env.GetNumFactions = function() return #rows() end
+			env.GetFactionInfo = function(i)
+				local r = rows()[i]
+				if not r then return nil end
+				return unpack(r)
+			end
+			env.ExpandFactionHeader = function() collapsed = false; toggled = toggled + 1 end
+			env.CollapseFactionHeader = function() collapsed = true; toggled = toggled + 1 end
+			local out = T.reputation()
+			assert.equal(2, #out)
+			assert.equal("Orgrimmar", out[1].name)
+			assert.equal(14200, out[1].value)
+			assert.equal("Guild", out[2].name)
+			assert.is_true(collapsed)
+			assert.equal(2, toggled)
+		end)
+		it("skips header expand/collapse in combat or while ReputationFrame is shown", function()
+			local expanded = false
+			env.GetNumFactions = function() return 1 end
+			env.GetFactionInfo = function() return "Horde", "", 4, 0, 3000, 0, false, false, true, true, false end
+			env.ExpandFactionHeader = function() expanded = true end
+			env.CollapseFactionHeader = function() expanded = true end
+			env.InCombatLockdown = function() return true end
+			T.reputation()
+			assert.is_false(expanded)
+			env.InCombatLockdown = function() return false end
+			env.ReputationFrame = { IsShown = function() return true end }
+			T.reputation()
+			assert.is_false(expanded)
+		end)
+	end)
+
+	describe("mergeRecord", function()
+		it("caps deaths at 100, sessions at 30 with monthly archiving, and dungeons at 50", function()
+			local dst = { deaths = {}, sessions = {}, dungeons = {} }
+			local src = { deaths = {}, sessions = {}, dungeons = {} }
+			for i = 1, 70 do
+				src.deaths[i] = { level = 10, ts = i }
+				dst.deaths[i] = { level = 20, ts = 100 + i }
+			end
+			for i = 1, 20 do
+				src.sessions[i] = { date = "2026-10-01 10:00", minutes = 10, xpGained = 100, copperDelta = 50 }
+				dst.sessions[i] = { date = "2026-11-01 10:00", minutes = 20, xpGained = 200, copperDelta = 100 }
+			end
+			for i = 1, 30 do
+				src.dungeons[i] = { name = "RFC" }
+				dst.dungeons[i] = { name = "WC" }
+			end
+			T.mergeRecord(dst, src)
+			assert.equal(100, #dst.deaths)
+			assert.equal(140, dst.deathCount)
+			assert.equal(30, #dst.sessions)
+			assert.equal(10, dst.sessionMonths["2026-10"].sessions)
+			assert.equal(1000, dst.sessionMonths["2026-10"].xp)
+			assert.equal(50, #dst.dungeons)
+		end)
+	end)
+
+	describe("talentCount", function()
+		it("sums tree points when trait list is empty and uses list count otherwise", function()
+			assert.equal(24, T.talentCount({ list = {}, trees = { { points = 0 }, { points = 24 }, { points = 0 } } }))
+			assert.equal(2, T.talentCount({ list = { { name = "A" }, { name = "B" } }, trees = {} }))
+			assert.equal(0, T.talentCount(nil))
+		end)
+	end)
+
+	describe("goldDay", function()
+		it("prunes older days above 120 when a new day is added", function()
+			local s = { goldDays = {} }
+			for i = 1, 120 do
+				s.goldDays[string.format("2020-01-%03d", i)] = i
+			end
+			env.money = 999
+			T.goldDay(s)
+			local n = 0
+			for _ in pairs(s.goldDays) do n = n + 1 end
+			assert.equal(120, n)
+			assert.is_nil(s.goldDays["2020-01-001"])
+		end)
+	end)
+
+	describe("snapshot", function()
+		it("clears dirty flags on scan and skips sessionSave/clockTick on fromLogout", function()
+			local repCalls = 0
+			env.GetNumFactions = function() repCalls = repCalls + 1; return 0 end
+			env.GetFactionInfo = function() return nil end
+			local s = T.snapshot()
+			assert.is_table(s)
+			assert.is_false(T.dirty.rep)
+			assert.is_false(T.dirty.bags)
+			assert.is_nil(s.api)
+			local callsAfterFirst = repCalls
+			T.snapshot()
+			assert.equal(callsAfterFirst, repCalls)
+			-- fromLogout skips clockTick and sessionSave
+			s.online = 500
+			env.now = env.now + 120
+			T.snapshot(true)
+			assert.equal(500, s.online)
+		end)
 	end)
 
 	describe("bank", function()

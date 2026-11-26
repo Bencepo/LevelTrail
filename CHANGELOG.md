@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Much lighter in combat and while leveling: periodic snapshots wait until combat ends and only rescan subsystems (bags, gear, spells, professions, talents, quests, reputation) when they actually changed. Reputation headers are no longer expanded or collapsed in combat or while the Reputation window is open.
+- Lower idle and event overhead: the tracker HUD only updates fonts and layout when text or settings change and skips mouseover polling at full opacity; bag, bank, durability and item-info events are only registered while needed.
+- Fixed: legacy reputation fallback no longer drops header flags; `/trail hud` and Shift-click on the minimap can now hide the tracker while it is hidden in combat; Classic talent points are counted in `/trail` summaries; large gold totals in the JSON export no longer overflow 32-bit integers; `/reload` in combat tracks combat state accurately.
+- Shared settings window updated to BencepoUI 5 (fewer allocations when opening dropdowns and link popups).
+
 ## 1.5.6
 
 - The shared settings window (BencepoUI 4): the hint in its title row ("drag to move …") no longer runs into the title and version; it is shortened or left out when there is no room.
