@@ -276,7 +276,7 @@ describe("LevelTrail", function()
 			env.GetFactionInfo = function(i)
 				local r = rows()[i]
 				if not r then return nil end
-				return unpack(r)
+				return (table.unpack or unpack)(r)
 			end
 			env.ExpandFactionHeader = function() collapsed = false; toggled = toggled + 1 end
 			env.CollapseFactionHeader = function() collapsed = true; toggled = toggled + 1 end

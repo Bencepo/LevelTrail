@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.5.7
 
 - Much lighter in combat and while leveling: periodic snapshots wait until combat ends and only rescan subsystems (bags, gear, spells, professions, talents, quests, reputation) when they actually changed. Reputation headers are no longer expanded or collapsed in combat or while the Reputation window is open.
 - Lower idle and event overhead: the tracker HUD only updates fonts and layout when text or settings change and skips mouseover polling at full opacity; bag, bank, durability and item-info events are only registered while needed.
