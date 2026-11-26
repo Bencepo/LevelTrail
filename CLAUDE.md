@@ -24,3 +24,4 @@ LevelTrail: records a character's leveling run in WoW Forever (Lua 5.1) for the 
 - Minimap button like every Bencepo addon: left-click opens the settings window.
 - Tests (`busted`), luacheck and LuaLS run in CI; LuaLS must report zero diagnostics.
 - Release: new version heading at the top of `CHANGELOG.md`, push to `main`; the workflow uploads to CurseForge and Wago. Test in game first.
+- Release rhythm (Ben, Nov 2026): at most one release per addon per week. Tested changes are collected under `## Unreleased` at the top of `CHANGELOG.md` (the workflow only releases a numbered heading, so pushes to `main` with `## Unreleased` release nothing); the weekly release renames it to the version. Exception: hotfixes for Lua errors or a broken core feature go out at once.
