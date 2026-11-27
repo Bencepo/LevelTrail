@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Settings window: "More from Bencepo" button in the footer links to all Bencepo addons (BencepoUI 6).
+
 ## 1.5.7
 
 - Much lighter in combat and while leveling: periodic snapshots wait until combat ends and only rescan subsystems (bags, gear, spells, professions, talents, quests, reputation) when they actually changed. Reputation headers are no longer expanded or collapsed in combat or while the Reputation window is open.

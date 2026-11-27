@@ -9,7 +9,7 @@ LevelTrail: records a character's leveling run in WoW Forever (Lua 5.1) for the 
 - `tests/`: busted specs with a WoW mock. `ROADMAP.md`: what is done and what is next.
 - `Icons/minimap.tga`: in-game icon from the Bencepo logo family. `media/logo.png`: logo for CurseForge, Wago and the website (not packaged).
 - `Libs/`: LibStub, CallbackHandler, LibDataBroker, LibDBIcon, BencepoUI.
-- `Libs/BencepoUI` is shared by all Bencepo addons and must be the same file in each (canonical copy: minor 4, Nov 2026, with `UI:ShowLink`, used for "Report a bug"). LibStub loads only the highest minor, so two different copies with the same minor make the result depend on load order. Change it in one repo, bump the minor, copy it to the others.
+- `Libs/BencepoUI` is shared by all Bencepo addons and must be the same file in each (canonical copy: minor 6, Nov 2026, with `UI:ShowLink`, used for "Report a bug"). LibStub loads only the highest minor, so two different copies with the same minor make the result depend on load order. Change it in one repo, bump the minor, copy it to the others.
 
 ## How it works
 
