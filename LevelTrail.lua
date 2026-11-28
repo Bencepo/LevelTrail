@@ -30,14 +30,23 @@ local ADDON_VERSION = GetMetadata and GetMetadata(ADDON, "Version") or ""
 if ADDON_VERSION == "" or ADDON_VERSION:find("^@") then ADDON_VERSION = "dev" end
 local TITLE = "LevelTrail " .. ADDON_VERSION
 
-local function tryTail(ok, ...)
-  if ok then return ... end
-  return nil
-end
+local abs, floor, max, min = math.abs, math.floor, math.max, math.min
+local format = string.format
+local tconcat, tremove, tsort = table.concat, table.remove, table.sort
+local ipairs, next, pairs, pcall, select, tonumber, tostring, type, wipe =
+  ipairs, next, pairs, pcall, select, tonumber, tostring, type, wipe
 
-local function try(fn, ...)
-  if type(fn) ~= "function" then return nil end
-  return tryTail(pcall(fn, ...))
+local try
+do
+  local function tryTail(ok, ...)
+    if ok then return ... end
+    return nil
+  end
+
+  function try(fn, ...)
+    if type(fn) ~= "function" then return nil end
+    return tryTail(pcall(fn, ...))
+  end
 end
 
 ---------------------------------------------------------------- XP table and level cap
@@ -57,7 +66,7 @@ end
 local function xpForLevel(level, scale)
   local v = XP_TABLE[level]
   if not v then return nil end
-  return math.floor(v * (scale or 1) + 0.5)
+  return floor(v * (scale or 1) + 0.5)
 end
 
 -- XP values are 0 for a moment at login and logout; at the level cap UnitXPMax may stay 0.
@@ -112,73 +121,80 @@ end
 
 -- Adds the history of an older record (src) to the newer one (dst). Snapshot values (level,
 -- bags, gear, quests...) stay as in dst; counters are added up, lists are joined.
-local function addNumbers(dst, src)
-  for k, v in pairs(src) do
-    if type(v) == "number" and (dst[k] == nil or type(dst[k]) == "number") then
-      dst[k] = (dst[k] or 0) + v
-    elseif type(v) == "table" then
-      if type(dst[k]) ~= "table" then dst[k] = {} end
-      addNumbers(dst[k], v)
-    elseif dst[k] == nil then
-      dst[k] = v
-    end
-  end
-end
+local mergeRecord
+do
+  local MERGE_NUMBER_KEYS = { "deathsByLevel", "sessionMonths", "zoneLevels", "xpSources", "travel", "questsByLevel" }
 
-local function mergeRecord(dst, src)
-  local off = src.online or 0
-  dst.online = (dst.online or 0) + off
-  if dst.levelSince then dst.levelSince.online = (dst.levelSince.online or 0) + off end
-  local byLevel = {}
-  for _, sp in ipairs(src.splits or {}) do if sp.level then byLevel[sp.level] = sp end end
-  for _, sp in ipairs(dst.splits or {}) do
-    if sp.online then sp.online = sp.online + off end
-    if sp.level then byLevel[sp.level] = sp end
-  end
-  local splits = {}
-  for _, sp in pairs(byLevel) do splits[#splits + 1] = sp end
-  table.sort(splits, function(a, b) return a.level < b.level end)
-  dst.splits = splits
-  local function join(key, limit, onDrop)
-    local list = {}
-    for _, x in ipairs(src[key] or {}) do list[#list + 1] = x end
-    for _, x in ipairs(dst[key] or {}) do list[#list + 1] = x end
-    while limit and #list > limit do
-      local old = table.remove(list, 1)
-      if onDrop then onDrop(dst, old) end
-    end
-    if #list > 0 then dst[key] = list end
-  end
-  dst.deathCount = (dst.deathCount or #(dst.deaths or {})) + (src.deathCount or #(src.deaths or {}))
-  join("deaths", 100); join("sessions", 30, archiveSession); join("dungeons", 50)
-  for _, key in ipairs({ "deathsByLevel", "sessionMonths", "zoneLevels", "xpSources", "travel", "questsByLevel" }) do
-    if type(src[key]) == "table" then
-      dst[key] = type(dst[key]) == "table" and dst[key] or {}
-      addNumbers(dst[key], src[key])
+  local function sortSplitsByLevel(a, b) return a.level < b.level end
+
+  local function addNumbers(dst, src)
+    for k, v in pairs(src) do
+      if type(v) == "number" and (dst[k] == nil or type(dst[k]) == "number") then
+        dst[k] = (dst[k] or 0) + v
+      elseif type(v) == "table" then
+        if type(dst[k]) ~= "table" then dst[k] = {} end
+        addNumbers(dst[k], v)
+      elseif dst[k] == nil then
+        dst[k] = v
+      end
     end
   end
-  for zone, z in pairs(src.zones or {}) do
-    dst.zones = dst.zones or {}
-    local d = dst.zones[zone]
-    if not d then dst.zones[zone] = z else
-      d.time, d.xp, d.deaths = (d.time or 0) + (z.time or 0), (d.xp or 0) + (z.xp or 0), (d.deaths or 0) + (z.deaths or 0)
-      if z.first and (not d.first or z.first < d.first) then d.first = z.first end
-      if z.last and (not d.last or z.last > d.last) then d.last = z.last end
+
+  function mergeRecord(dst, src)
+    local off = src.online or 0
+    dst.online = (dst.online or 0) + off
+    if dst.levelSince then dst.levelSince.online = (dst.levelSince.online or 0) + off end
+    local byLevel = {}
+    for _, sp in ipairs(src.splits or {}) do if sp.level then byLevel[sp.level] = sp end end
+    for _, sp in ipairs(dst.splits or {}) do
+      if sp.online then sp.online = sp.online + off end
+      if sp.level then byLevel[sp.level] = sp end
     end
+    local splits = {}
+    for _, sp in pairs(byLevel) do splits[#splits + 1] = sp end
+    tsort(splits, sortSplitsByLevel)
+    dst.splits = splits
+    local function join(key, limit, onDrop)
+      local list = {}
+      for _, x in ipairs(src[key] or {}) do list[#list + 1] = x end
+      for _, x in ipairs(dst[key] or {}) do list[#list + 1] = x end
+      while limit and #list > limit do
+        local old = tremove(list, 1)
+        if onDrop then onDrop(dst, old) end
+      end
+      if #list > 0 then dst[key] = list end
+    end
+    dst.deathCount = (dst.deathCount or #(dst.deaths or {})) + (src.deathCount or #(src.deaths or {}))
+    join("deaths", 100); join("sessions", 30, archiveSession); join("dungeons", 50)
+    for _, key in ipairs(MERGE_NUMBER_KEYS) do
+      if type(src[key]) == "table" then
+        dst[key] = type(dst[key]) == "table" and dst[key] or {}
+        addNumbers(dst[key], src[key])
+      end
+    end
+    for zone, z in pairs(src.zones or {}) do
+      dst.zones = dst.zones or {}
+      local d = dst.zones[zone]
+      if not d then dst.zones[zone] = z else
+        d.time, d.xp, d.deaths = (d.time or 0) + (z.time or 0), (d.xp or 0) + (z.xp or 0), (d.deaths or 0) + (z.deaths or 0)
+        if z.first and (not d.first or z.first < d.first) then d.first = z.first end
+        if z.last and (not d.last or z.last > d.last) then d.last = z.last end
+      end
+    end
+    if src.repairs then
+      dst.repairs = dst.repairs or { total = 0, count = 0 }
+      dst.repairs.total = (dst.repairs.total or 0) + (src.repairs.total or 0)
+      dst.repairs.count = (dst.repairs.count or 0) + (src.repairs.count or 0)
+      dst.repairs.last = dst.repairs.last or src.repairs.last
+    end
+    for day, c in pairs(src.goldDays or {}) do
+      dst.goldDays = dst.goldDays or {}
+      if dst.goldDays[day] == nil then dst.goldDays[day] = c end
+    end
+    if src.firstLevel and (not dst.firstLevel or src.firstLevel < dst.firstLevel) then dst.firstLevel = src.firstLevel end
+    -- anything only the older record has (tracker position, bank...) is kept
+    for k, v in pairs(src) do if dst[k] == nil then dst[k] = v end end
   end
-  if src.repairs then
-    dst.repairs = dst.repairs or { total = 0, count = 0 }
-    dst.repairs.total = (dst.repairs.total or 0) + (src.repairs.total or 0)
-    dst.repairs.count = (dst.repairs.count or 0) + (src.repairs.count or 0)
-    dst.repairs.last = dst.repairs.last or src.repairs.last
-  end
-  for day, c in pairs(src.goldDays or {}) do
-    dst.goldDays = dst.goldDays or {}
-    if dst.goldDays[day] == nil then dst.goldDays[day] = c end
-  end
-  if src.firstLevel and (not dst.firstLevel or src.firstLevel < dst.firstLevel) then dst.firstLevel = src.firstLevel end
-  -- anything only the older record has (tracker position, bank...) is kept
-  for k, v in pairs(src) do if dst[k] == nil then dst[k] = v end end
 end
 
 -- Records of this character saved under an empty realm name go into the record of its realm.
@@ -402,13 +418,13 @@ local function dungeonFinish(s)
   if not run then return end
   s.dungeonRun = nil
   local stop = run.last or time()
-  local minutes = math.floor((stop - run.start) / 60)
+  local minutes = floor((stop - run.start) / 60)
   if minutes < 2 then return end
   s.dungeons = s.dungeons or {}
   s.dungeons[#s.dungeons + 1] = { name = run.name, type = run.type, date = run.date, level = run.level,
     minutes = minutes, xp = xpTotal(s) - (run.xp0 or 0), copper = (GetMoney() or 0) - (run.copper0 or 0),
     kills = run.kills or 0, deaths = run.deaths or 0, loot = run.loot or 0 }
-  while #s.dungeons > 50 do table.remove(s.dungeons, 1) end
+  while #s.dungeons > 50 do tremove(s.dungeons, 1) end
 end
 
 local function dungeonCheck()
@@ -481,67 +497,70 @@ end
 -- Every library book is handed in with a quest of its own (same IDs for both factions),
 -- so the count is simply the number of these quests the character has completed.
 -- Quest IDs from Questie's Forever data (QuestieDB, foreverQuestFixes.lua).
-local BOOK_QUESTS = {
-  { 78124, "Nar'thalas Almanac, Vol. 74" },
-  { 78127, "The Dalaran Digest, Vol. 23" },
-  { 78142, "Bewitchments and Glamours" },
-  { 78143, "Secrets of the Dreamers" },
-  { 78145, "Arcanic Systems Manual" },
-  { 78146, "Goaz Scrolls" },
-  { 78147, "Crimes Against Anatomy" },
-  { 78148, "Runes of the Sorcerer-Kings" },
-  { 78149, "Fury of the Land" },
-  { 79091, "Archmage Antonidas: The Unabridged Autobiography" },
-  { 79092, "Archmage Theocritus' Research Journal" },
-  { 79093, "Rumi of Gnomeregan: The Collected Works" },
-  { 79094, "The Lessons of Ta'zo" },
-  { 79095, "The Apothecary's Metaphysical Primer" },
-  { 79096, "Ataeric: On Arcane Curiosities" },
-  { 79097, "Baxtan: On Destructive Magics" },
-  { 79535, "Basilisks: Should Petrification be Feared?" },
-  { 79947, "Geomancy: The Stone-Cold Truth" },
-  { 79948, "Defensive Magics 101" },
-  { 79949, "A Web of Lies: Debunking Myths and Legends" },
-  { 79950, "Demons and You" },
-  { 79951, "Mummies: A Guide to the Unsavory Undead" },
-  { 79952, "RwlRwlRwlRwl!" },
-  { 79953, "A Ludite's Guide to Caring for Your Demonic Pet" },
-  { 81947, "Sanguine Sorcery" },
-  { 81949, "Legends of the Tidesages" },
-  { 81951, "The Liminal and the Arcane" },
-  { 81952, "Everyday Etiquette" },
-  { 81953, "Stonewrought Design" },
-  { 81954, "Venomous Journeys" },
-  { 81955, "A Mind of Metal" },
-  { 81956, "Conjurer's Codex" },
-  { 84395, "Undead Potatoes" },
-  { 84396, "Magma or Lava?" },
-  { 84397, "Northern Kalimdor - A Comprehensive Guide" },
-  { 84398, "A Study of the Light" },
-  { 84399, "Ka-Boom!" },
-  { 84400, "The Knight and the Lady" },
-  { 84401, "Scourge: Undead Menace or Misunderstood?" },
-  { 84402, "Necromancy 101" },
-}
-local BOOK_REWARDS = { friend = 78150, greater20 = 79536, greater25 = 82208 }
 local BOOK_IDS = {}
-for _, b in ipairs(BOOK_QUESTS) do BOOK_IDS[b[1]] = b[2] end
+local libraryBooks
+do
+  local BOOK_QUESTS = {
+    { 78124, "Nar'thalas Almanac, Vol. 74" },
+    { 78127, "The Dalaran Digest, Vol. 23" },
+    { 78142, "Bewitchments and Glamours" },
+    { 78143, "Secrets of the Dreamers" },
+    { 78145, "Arcanic Systems Manual" },
+    { 78146, "Goaz Scrolls" },
+    { 78147, "Crimes Against Anatomy" },
+    { 78148, "Runes of the Sorcerer-Kings" },
+    { 78149, "Fury of the Land" },
+    { 79091, "Archmage Antonidas: The Unabridged Autobiography" },
+    { 79092, "Archmage Theocritus' Research Journal" },
+    { 79093, "Rumi of Gnomeregan: The Collected Works" },
+    { 79094, "The Lessons of Ta'zo" },
+    { 79095, "The Apothecary's Metaphysical Primer" },
+    { 79096, "Ataeric: On Arcane Curiosities" },
+    { 79097, "Baxtan: On Destructive Magics" },
+    { 79535, "Basilisks: Should Petrification be Feared?" },
+    { 79947, "Geomancy: The Stone-Cold Truth" },
+    { 79948, "Defensive Magics 101" },
+    { 79949, "A Web of Lies: Debunking Myths and Legends" },
+    { 79950, "Demons and You" },
+    { 79951, "Mummies: A Guide to the Unsavory Undead" },
+    { 79952, "RwlRwlRwlRwl!" },
+    { 79953, "A Ludite's Guide to Caring for Your Demonic Pet" },
+    { 81947, "Sanguine Sorcery" },
+    { 81949, "Legends of the Tidesages" },
+    { 81951, "The Liminal and the Arcane" },
+    { 81952, "Everyday Etiquette" },
+    { 81953, "Stonewrought Design" },
+    { 81954, "Venomous Journeys" },
+    { 81955, "A Mind of Metal" },
+    { 81956, "Conjurer's Codex" },
+    { 84395, "Undead Potatoes" },
+    { 84396, "Magma or Lava?" },
+    { 84397, "Northern Kalimdor - A Comprehensive Guide" },
+    { 84398, "A Study of the Light" },
+    { 84399, "Ka-Boom!" },
+    { 84400, "The Knight and the Lady" },
+    { 84401, "Scourge: Undead Menace or Misunderstood?" },
+    { 84402, "Necromancy 101" },
+  }
+  local BOOK_REWARDS = { friend = 78150, greater20 = 79536, greater25 = 82208 }
+  for _, b in ipairs(BOOK_QUESTS) do BOOK_IDS[b[1]] = b[2] end
 
-local function questDone(id)
-  if C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then return try(C_QuestLog.IsQuestFlaggedCompleted, id) and true or false end
-  if IsQuestFlaggedCompleted then return try(IsQuestFlaggedCompleted, id) and true or false end
-  return false
-end
-
-local function libraryBooks()
-  local done, missing = {}, {}
-  for _, b in ipairs(BOOK_QUESTS) do
-    local list = questDone(b[1]) and done or missing
-    list[#list + 1] = { quest = b[1], title = b[2] }
+  local function questDone(id)
+    if C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then return try(C_QuestLog.IsQuestFlaggedCompleted, id) and true or false end
+    if IsQuestFlaggedCompleted then return try(IsQuestFlaggedCompleted, id) and true or false end
+    return false
   end
-  local rewards = {}
-  for k, id in pairs(BOOK_REWARDS) do rewards[k] = questDone(id) end
-  return { count = #done, total = #BOOK_QUESTS, done = done, missing = missing, rewards = rewards }
+
+  function libraryBooks()
+    local done, missing = {}, {}
+    for _, b in ipairs(BOOK_QUESTS) do
+      local list = questDone(b[1]) and done or missing
+      list[#list + 1] = { quest = b[1], title = b[2] }
+    end
+    local rewards = {}
+    for k, id in pairs(BOOK_REWARDS) do rewards[k] = questDone(id) end
+    return { count = #done, total = #BOOK_QUESTS, done = done, missing = missing, rewards = rewards }
+  end
 end
 
 ---------------------------------------------------------------- deaths, gold and repairs
@@ -550,7 +569,7 @@ local function onDeath()
   s.deaths = s.deaths or {}
   s.deaths[#s.deaths + 1] = { date = date("%Y-%m-%d %H:%M"), ts = time(), level = UnitLevel("player"),
     zone = GetRealZoneText and GetRealZoneText() or "", subzone = GetSubZoneText and GetSubZoneText() or "" }
-  while #s.deaths > 100 do table.remove(s.deaths, 1) end
+  while #s.deaths > 100 do tremove(s.deaths, 1) end
   s.deathCount = (s.deathCount or 0) + 1
   -- every death per level (the list above keeps only the latest)
   s.deathsByLevel = s.deathsByLevel or {}
@@ -571,7 +590,7 @@ local function goldDay(s)
     local keys = {}
     for k in pairs(s.goldDays) do keys[#keys + 1] = k end
     if #keys > 120 then
-      table.sort(keys)
+      tsort(keys)
       for i = 1, #keys - 120 do s.goldDays[keys[i]] = nil end
     end
   end
@@ -633,20 +652,23 @@ local function itemRecord(link, count, loc, id)
   }
 end
 
-local SLOT_NAMES = {
-  [1] = "head", [2] = "neck", [3] = "shoulder", [4] = "shirt", [5] = "chest", [6] = "waist",
-  [7] = "legs", [8] = "feet", [9] = "wrist", [10] = "hands", [11] = "finger1", [12] = "finger2",
-  [13] = "trinket1", [14] = "trinket2", [15] = "back", [16] = "mainhand", [17] = "offhand",
-  [18] = "relic", [19] = "tabard",
-}
+local equipped
+do
+  local SLOT_NAMES = {
+    [1] = "head", [2] = "neck", [3] = "shoulder", [4] = "shirt", [5] = "chest", [6] = "waist",
+    [7] = "legs", [8] = "feet", [9] = "wrist", [10] = "hands", [11] = "finger1", [12] = "finger2",
+    [13] = "trinket1", [14] = "trinket2", [15] = "back", [16] = "mainhand", [17] = "offhand",
+    [18] = "relic", [19] = "tabard",
+  }
 
-local function equipped()
-  local out = {}
-  for slot, name in pairs(SLOT_NAMES) do
-    local link = try(GetInventoryItemLink, "player", slot)
-    if link then out[name] = itemRecord(link, 1) end
+  function equipped()
+    local out = {}
+    for slot, name in pairs(SLOT_NAMES) do
+      local link = try(GetInventoryItemLink, "player", slot)
+      if link then out[name] = itemRecord(link, 1) end
+    end
+    return out
   end
-  return out
 end
 
 ---------------------------------------------------------------- containers
@@ -675,11 +697,14 @@ local function freeSlots(bag)
 end
 
 -- Equippable gear worth listing (not bags, ammo or items that only look equippable).
-local NOT_GEAR = { [""] = true, INVTYPE_BAG = true, INVTYPE_NON_EQUIP_IGNORE = true, INVTYPE_AMMO = true }
-local function gearEquipLoc(link)
-  local loc, id = itemEquipLoc(link)
-  if loc ~= nil and not NOT_GEAR[loc] then return loc, id end
-  return nil
+local gearEquipLoc
+do
+  local NOT_GEAR = { [""] = true, INVTYPE_BAG = true, INVTYPE_NON_EQUIP_IGNORE = true, INVTYPE_AMMO = true }
+  function gearEquipLoc(link)
+    local loc, id = itemEquipLoc(link)
+    if loc ~= nil and not NOT_GEAR[loc] then return loc, id end
+    return nil
+  end
 end
 
 -- returns sizes per bag, item counts by id, and equippable gear found
@@ -704,40 +729,43 @@ local function scanBags(first, last)
 end
 
 ---------------------------------------------------------------- professions
-local function addProf(out, name, rank, max)
-  if name and rank and max and max > 1 then out[name] = { rank = rank, max = max } end
-end
-
-local function addProfIndex(out, idx)
-  if not idx then return end
-  local name, _, rank, maxRank = try(GetProfessionInfo, idx)
-  addProf(out, name, rank, maxRank)
-end
-
-local function professions()
-  local out = {}
-  if GetProfessions and GetProfessionInfo then
-    local p1, p2, p3, p4, p5, p6 = try(GetProfessions)
-    addProfIndex(out, p1)
-    addProfIndex(out, p2)
-    addProfIndex(out, p3)
-    addProfIndex(out, p4)
-    addProfIndex(out, p5)
-    addProfIndex(out, p6)
+local professions
+do
+  local function addProf(out, name, rank, maxRank)
+    if name and rank and maxRank and maxRank > 1 then out[name] = { rank = rank, max = maxRank } end
   end
-  if C_TradeSkillUI and C_TradeSkillUI.GetAllProfessionTradeSkillLines and C_TradeSkillUI.GetProfessionInfoBySkillLineID then
-    local lines = try(C_TradeSkillUI.GetAllProfessionTradeSkillLines)
-    if type(lines) == "table" then
-      for _, id in ipairs(lines) do
-        local info = try(C_TradeSkillUI.GetProfessionInfoBySkillLineID, id)
-        if type(info) == "table" and (info.skillLevel or 0) > 0 then
-          -- the base name ("Mining"), not the expansion skill line, so it merges with GetProfessionInfo
-          addProf(out, info.parentProfessionName or info.professionName, info.skillLevel, info.maxSkillLevel)
+
+  local function addProfIndex(out, idx)
+    if not idx then return end
+    local name, _, rank, maxRank = try(GetProfessionInfo, idx)
+    addProf(out, name, rank, maxRank)
+  end
+
+  function professions()
+    local out = {}
+    if GetProfessions and GetProfessionInfo then
+      local p1, p2, p3, p4, p5, p6 = try(GetProfessions)
+      addProfIndex(out, p1)
+      addProfIndex(out, p2)
+      addProfIndex(out, p3)
+      addProfIndex(out, p4)
+      addProfIndex(out, p5)
+      addProfIndex(out, p6)
+    end
+    if C_TradeSkillUI and C_TradeSkillUI.GetAllProfessionTradeSkillLines and C_TradeSkillUI.GetProfessionInfoBySkillLineID then
+      local lines = try(C_TradeSkillUI.GetAllProfessionTradeSkillLines)
+      if type(lines) == "table" then
+        for _, id in ipairs(lines) do
+          local info = try(C_TradeSkillUI.GetProfessionInfoBySkillLineID, id)
+          if type(info) == "table" and (info.skillLevel or 0) > 0 then
+            -- the base name ("Mining"), not the expansion skill line, so it merges with GetProfessionInfo
+            addProf(out, info.parentProfessionName or info.professionName, info.skillLevel, info.maxSkillLevel)
+          end
         end
       end
     end
+    return out
   end
-  return out
 end
 
 -- Recipes can only be read while a profession window is open.
@@ -886,96 +914,102 @@ end
 ---------------------------------------------------------------- reputation
 -- One reputation API for both client styles: count, row(i) and expand/collapse.
 -- row(i) returns: name, isHeader, isCollapsed, hasRep, standing, value, min, max.
-local function repRowModern(i)
-  local data = try(C_Reputation.GetFactionDataByIndex, i)
-  if type(data) ~= "table" or not data.name then return nil end
-  return data.name, data.isHeader, data.isCollapsed, data.isHeaderWithRep,
-    data.reaction, data.currentStanding, data.currentReactionThreshold, data.nextReactionThreshold
-end
-
-local function repRowLegacy(i)
-  local name, _, standing, min, max, value, _, _, isHeader, isCollapsed, hasRep = try(GetFactionInfo, i)
-  if not name then return nil end
-  return name, isHeader, isCollapsed, hasRep, standing, value, min, max
-end
-
 local repCache = {}
-local function repAPI()
-  if not repCache.resolved then
-    repCache.resolved = true
-    if C_Reputation and C_Reputation.GetNumFactions and C_Reputation.GetFactionDataByIndex then
-      repCache.num, repCache.row, repCache.expand, repCache.collapse =
-        C_Reputation.GetNumFactions, repRowModern, C_Reputation.ExpandFactionHeader, C_Reputation.CollapseFactionHeader
-    elseif GetNumFactions and GetFactionInfo then
-      repCache.num, repCache.row, repCache.expand, repCache.collapse =
-        GetNumFactions, repRowLegacy, ExpandFactionHeader, CollapseFactionHeader
-    end
+local reputation
+do
+  local function repRowModern(i)
+    local data = try(C_Reputation.GetFactionDataByIndex, i)
+    if type(data) ~= "table" or not data.name then return nil end
+    return data.name, data.isHeader, data.isCollapsed, data.isHeaderWithRep,
+      data.reaction, data.currentStanding, data.currentReactionThreshold, data.nextReactionThreshold
   end
-  return repCache.num, repCache.row, repCache.expand, repCache.collapse
-end
 
--- The game lists only the rows the player has expanded: open every header for the
--- scan and close the ones that were closed again afterwards.
-local function reputation()
-  local out = {}
-  local numFn, row, expand, collapse = repAPI()
-  if not numFn then return out end
-  local repFrame = _G["ReputationFrame"]
-  local canToggle = expand and not (InCombatLockdown and InCombatLockdown())
-    and not (repFrame and repFrame:IsShown())
-  local reopened
-  if canToggle then
-    reopened = {}
-    local i, guard = 1, 0
-    while i <= (try(numFn) or 0) and guard < 500 do
-      guard = guard + 1
-      local name, isHeader, isCollapsed = row(i)
-      if name and isHeader and isCollapsed then
-        reopened[name] = true
-        repCache.scanning = true
-        try(expand, i)
-        repCache.scanning = false
-      end
-      i = i + 1
-    end
+  local function repRowLegacy(i)
+    local name, _, standing, minRep, maxRep, value, _, _, isHeader, isCollapsed, hasRep = try(GetFactionInfo, i)
+    if not name then return nil end
+    return name, isHeader, isCollapsed, hasRep, standing, value, minRep, maxRep
   end
-  for i = 1, try(numFn) or 0 do
-    local name, isHeader, _, hasRep, standing, value, min, max = row(i)
-    -- headers with a standing of their own (hasRep) are factions too
-    if name and (not isHeader or hasRep) then
-      out[#out + 1] = { name = name, standing = standing, value = value, min = min, max = max }
-    end
-  end
-  if collapse and reopened and next(reopened) then
-    for i = try(numFn) or 0, 1, -1 do
-      local name, isHeader, isCollapsed = row(i)
-      if name and isHeader and reopened[name] and not isCollapsed then
-        repCache.scanning = true
-        try(collapse, i)
-        repCache.scanning = false
+
+  local function repAPI()
+    if not repCache.resolved then
+      repCache.resolved = true
+      if C_Reputation and C_Reputation.GetNumFactions and C_Reputation.GetFactionDataByIndex then
+        repCache.num, repCache.row, repCache.expand, repCache.collapse =
+          C_Reputation.GetNumFactions, repRowModern, C_Reputation.ExpandFactionHeader, C_Reputation.CollapseFactionHeader
+      elseif GetNumFactions and GetFactionInfo then
+        repCache.num, repCache.row, repCache.expand, repCache.collapse =
+          GetNumFactions, repRowLegacy, ExpandFactionHeader, CollapseFactionHeader
       end
     end
+    return repCache.num, repCache.row, repCache.expand, repCache.collapse
   end
-  return out
+
+  -- The game lists only the rows the player has expanded: open every header for the
+  -- scan and close the ones that were closed again afterwards.
+  function reputation()
+    local out = {}
+    local numFn, row, expand, collapse = repAPI()
+    if not numFn then return out end
+    local repFrame = _G["ReputationFrame"]
+    local canToggle = expand and not (InCombatLockdown and InCombatLockdown())
+      and not (repFrame and repFrame:IsShown())
+    local reopened
+    if canToggle then
+      reopened = {}
+      local i, guard = 1, 0
+      while i <= (try(numFn) or 0) and guard < 500 do
+        guard = guard + 1
+        local name, isHeader, isCollapsed = row(i)
+        if name and isHeader and isCollapsed then
+          reopened[name] = true
+          repCache.scanning = true
+          try(expand, i)
+          repCache.scanning = false
+        end
+        i = i + 1
+      end
+    end
+    for i = 1, try(numFn) or 0 do
+      local name, isHeader, _, hasRep, standing, value, minRep, maxRep = row(i)
+      -- headers with a standing of their own (hasRep) are factions too
+      if name and (not isHeader or hasRep) then
+        out[#out + 1] = { name = name, standing = standing, value = value, min = minRep, max = maxRep }
+      end
+    end
+    if collapse and reopened and next(reopened) then
+      for i = try(numFn) or 0, 1, -1 do
+        local name, isHeader, isCollapsed = row(i)
+        if name and isHeader and reopened[name] and not isCollapsed then
+          repCache.scanning = true
+          try(collapse, i)
+          repCache.scanning = false
+        end
+      end
+    end
+    return out
+  end
 end
 
 ---------------------------------------------------------------- character sheet
-local STAT_NAMES = { "str", "agi", "sta", "int", "spi" }
-local function sheet()
-  local t = {}
-  for i, n in ipairs(STAT_NAMES) do
-    local base, total = try(UnitStat, "player", i)
-    t[n] = total or base
+local sheet
+do
+  local STAT_NAMES = { "str", "agi", "sta", "int", "spi" }
+  function sheet()
+    local t = {}
+    for i, n in ipairs(STAT_NAMES) do
+      local base, total = try(UnitStat, "player", i)
+      t[n] = total or base
+    end
+    local b, p, n = try(UnitAttackPower, "player")
+    if b then t.ap = b + (p or 0) + (n or 0) end
+    local _, armor = try(UnitArmor, "player")
+    t.armor = armor
+    t.crit = try(GetCritChance)
+    t.dodge = try(GetDodgeChance)
+    t.health = try(UnitHealthMax, "player")
+    t.form = try(GetShapeshiftForm)
+    return t
   end
-  local b, p, n = try(UnitAttackPower, "player")
-  if b then t.ap = b + (p or 0) + (n or 0) end
-  local _, armor = try(UnitArmor, "player")
-  t.armor = armor
-  t.crit = try(GetCritChance)
-  t.dodge = try(GetDodgeChance)
-  t.health = try(UnitHealthMax, "player")
-  t.form = try(GetShapeshiftForm)
-  return t
 end
 
 ---------------------------------------------------------------- spells (known, for trainer reminders)
@@ -1039,7 +1073,7 @@ local function sessionSave(cur, closed)
   s.sessions = s.sessions or {}
   local stop = closed and (cur.last or cur.start) or time()
   local copperNow = closed and cur.lastCopper or GetMoney() or 0
-  local rec = { date = cur.date, minutes = math.floor(math.max(0, stop - cur.start) / 60),
+  local rec = { date = cur.date, minutes = floor(max(0, stop - cur.start) / 60),
     levelStart = cur.level, levelEnd = closed and (cur.lastLevel or cur.level) or UnitLevel("player"),
     xpGained = cur.xpGained or 0, copperDelta = copperNow - (cur.copper or copperNow),
     kills = cur.kills or 0, quests = cur.quests or 0, deaths = cur.deaths or 0, loot = cur.loot or 0 }
@@ -1051,7 +1085,7 @@ local function sessionSave(cur, closed)
   local list = s.sessions
   if list[#list] and list[#list].date == rec.date then list[#list] = rec else list[#list + 1] = rec end
   -- older sessions are summed up per month instead of being dropped
-  while #list > 30 do archiveSession(s, table.remove(list, 1)) end
+  while #list > 30 do archiveSession(s, tremove(list, 1)) end
 end
 
 local function sessionExpired(cur)
@@ -1092,13 +1126,13 @@ end
 local function trackXP()
   if not xpReady() then return end
   local s = store()
-  local xp, max, lvl = UnitXP("player") or 0, UnitXPMax("player") or 0, UnitLevel("player") or 0
+  local xp, xpMax, lvl = UnitXP("player") or 0, UnitXPMax("player") or 0, UnitLevel("player") or 0
   local t = s.xpTrack
   local gained = 0
   if t and t.level then
     if lvl > t.level then
       local scale = XP_TABLE[t.level] and (t.max or 0) > 0 and t.max / XP_TABLE[t.level] or 1
-      local first = math.max(0, (t.max or 0) - (t.xp or 0))
+      local first = max(0, (t.max or 0) - (t.xp or 0))
       addXP(t.level, "total", first)
       gained = first
       for L = t.level + 1, lvl - 1 do
@@ -1118,7 +1152,7 @@ local function trackXP()
       return
     end
   end
-  s.xpTrack = { xp = xp, max = max, level = lvl }
+  s.xpTrack = { xp = xp, max = xpMax, level = lvl }
   if gained > 0 then
     local cur = sessionTouch()
     if cur then cur.xpGained = (cur.xpGained or 0) + gained end
@@ -1200,13 +1234,13 @@ local function pace(s)
     local d = s.online - since.online
     if d > 300 then gained, secs = gained + xp, secs + d end
   end
-  if secs > 0 and gained > 0 then out.xpPerHour = math.floor(gained / secs * 3600 + 0.5) end
+  if secs > 0 and gained > 0 then out.xpPerHour = floor(gained / secs * 3600 + 0.5) end
   out.levelsUsed = used
   local cur = s.session
   if cur and cur.start and (time() - (cur.last or 0)) <= 900 then
     local d = time() - cur.start
-    out.sessionMinutes = math.floor(d / 60)
-    if d >= 300 and (cur.xpGained or 0) > 0 then out.sessionXpPerHour = math.floor(cur.xpGained / d * 3600 + 0.5) end
+    out.sessionMinutes = floor(d / 60)
+    if d >= 300 and (cur.xpGained or 0) > 0 then out.sessionXpPerHour = floor(cur.xpGained / d * 3600 + 0.5) end
   end
   local toNext = xpMax - xp
   local toCap = toNext ---@type number?
@@ -1219,8 +1253,8 @@ local function pace(s)
   out.xpToNext, out.xpToCap = toNext, toCap
   local rate = out.xpPerHour or out.sessionXpPerHour
   if rate and rate > 0 then
-    out.secToNext = math.floor(toNext / rate * 3600 + 0.5)
-    out.secToCap = toCap and math.floor(toCap / rate * 3600 + 0.5) or nil
+    out.secToNext = floor(toNext / rate * 3600 + 0.5)
+    out.secToCap = toCap and floor(toCap / rate * 3600 + 0.5) or nil
     out.rateFrom = out.xpPerHour and "levels" or "session"
   end
   return out
@@ -1228,16 +1262,16 @@ end
 
 local function hm(sec)
   if not sec then return "?" end
-  local h = math.floor(sec / 3600)
-  local m = math.floor((sec % 3600) / 60)
+  local h = floor(sec / 3600)
+  local m = floor((sec % 3600) / 60)
   if h > 0 then return h .. " h " .. m .. " min" end
   return m .. " min"
 end
 
 local function thousands(n)
-  n = math.floor(tonumber(n) or 0)
+  n = floor(tonumber(n) or 0)
   local sign = n < 0 and "-" or ""
-  local out = tostring(math.abs(n)):reverse():gsub("(%d%d%d)", "%1,"):reverse()
+  local out = tostring(abs(n)):reverse():gsub("(%d%d%d)", "%1,"):reverse()
   return sign .. (out:gsub("^,", ""))
 end
 
@@ -1331,18 +1365,20 @@ local function flushSnapshot(force, fromLogout)
   snapDirty = false
   pcall(snapshot, fromLogout)
 end
+local function runSnapshotSoon()
+  snapPending = false
+  if inCombat or (InCombatLockdown and InCombatLockdown()) then
+    snapDirty = true
+    return
+  end
+  snapDirty = false
+  pcall(snapshot)
+end
+
 local function snapshotSoon()
   if snapPending then return end
   snapPending = true
-  C_Timer.After(2, function()
-    snapPending = false
-    if inCombat or (InCombatLockdown and InCombatLockdown()) then
-      snapDirty = true
-      return
-    end
-    snapDirty = false
-    pcall(snapshot)
-  end)
+  C_Timer.After(2, runSnapshotSoon)
 end
 
 ---------------------------------------------------------------- data from older versions
@@ -1554,205 +1590,209 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 ---------------------------------------------------------------- text export (copy and paste into the app)
-local ARR_MT = { __arr = true }
-local function A(t) return setmetatable(t or {}, ARR_MT) end
+local enc, buildExport
+do
+  local ARR_MT = { __arr = true }
+  local function A(t) return setmetatable(t or {}, ARR_MT) end
 
-local function escChar(c)
-  if c == '"' then return '\\"'
-  elseif c == "\\" then return "\\\\"
-  elseif c == "\n" then return "\\n"
-  else return string.format("\\u%04x", c:byte()) end
-end
+  local function escChar(c)
+    if c == '"' then return '\\"'
+    elseif c == "\\" then return "\\\\"
+    elseif c == "\n" then return "\\n"
+    else return format("\\u%04x", c:byte()) end
+  end
 
-local function enc(v, out)
-  local t = type(v)
-  if t == "nil" then out[#out + 1] = "null"
-  elseif t == "boolean" then out[#out + 1] = v and "true" or "false"
-  elseif t == "number" then
-    if v ~= v or v == math.huge or v == -math.huge then out[#out + 1] = "null"
-    elseif v == math.floor(v) then out[#out + 1] = v == 0 and "0" or string.format("%.0f", v)
-    else out[#out + 1] = (string.format("%.2f", v):gsub("0+$", ""):gsub("%.$", "")) end
-  elseif t == "string" then
-    out[#out + 1] = '"' .. v:gsub('[%c"\\]', escChar) .. '"'
-  elseif t == "table" then
-    local n = #v
-    local mt = getmetatable(v)
-    local isArr = n > 0 or (mt and mt.__arr) or false
-    if isArr then for k in pairs(v) do if type(k) ~= "number" then isArr = false break end end end
-    if isArr then
-      out[#out + 1] = "["
-      for i = 1, n do if i > 1 then out[#out + 1] = "," end enc(v[i], out) end
-      out[#out + 1] = "]"
+  enc = function(v, out)
+    local t = type(v)
+    if t == "nil" then out[#out + 1] = "null"
+    elseif t == "boolean" then out[#out + 1] = v and "true" or "false"
+    elseif t == "number" then
+      if v ~= v or v == math.huge or v == -math.huge then out[#out + 1] = "null"
+      elseif v == floor(v) then out[#out + 1] = v == 0 and "0" or format("%.0f", v)
+      else out[#out + 1] = (format("%.2f", v):gsub("0+$", ""):gsub("%.$", "")) end
+    elseif t == "string" then
+      out[#out + 1] = '"' .. v:gsub('[%c"\\]', escChar) .. '"'
+    elseif t == "table" then
+      local n = #v
+      local mt = getmetatable(v)
+      local isArr = n > 0 or (mt and mt.__arr) or false
+      if isArr then for k in pairs(v) do if type(k) ~= "number" then isArr = false break end end end
+      if isArr then
+        out[#out + 1] = "["
+        for i = 1, n do if i > 1 then out[#out + 1] = "," end enc(v[i], out) end
+        out[#out + 1] = "]"
+      else
+        out[#out + 1] = "{"
+        local first = true
+        for k, val in pairs(v) do
+          if not first then out[#out + 1] = "," end
+          first = false
+          enc(tostring(k), out) out[#out + 1] = ":" enc(val, out)
+        end
+        out[#out + 1] = "}"
+      end
     else
-      out[#out + 1] = "{"
-      local first = true
-      for k, val in pairs(v) do
-        if not first then out[#out + 1] = "," end
-        first = false
-        enc(tostring(k), out) out[#out + 1] = ":" enc(val, out)
-      end
-      out[#out + 1] = "}"
-    end
-  else
-    out[#out + 1] = "null"
-  end
-end
-
-local STAT = { ITEM_MOD_STRENGTH_SHORT = "str", ITEM_MOD_AGILITY_SHORT = "agi", ITEM_MOD_STAMINA_SHORT = "sta",
-  ITEM_MOD_INTELLECT_SHORT = "int", ITEM_MOD_SPIRIT_SHORT = "spi", ITEM_MOD_ATTACK_POWER_SHORT = "ap",
-  RESISTANCE0_NAME = "armor", ITEM_MOD_DAMAGE_PER_SECOND_SHORT = "dps" }
-local NOTE = { ITEM_MOD_DEFENSE_SKILL_RATING_SHORT = "Defense", ITEM_MOD_FIRE_RESISTANCE_SHORT = "Fire Resistance",
-  ITEM_MOD_NATURE_RESISTANCE_SHORT = "Nature Resistance", ITEM_MOD_FROST_RESISTANCE_SHORT = "Frost Resistance",
-  ITEM_MOD_SHADOW_RESISTANCE_SHORT = "Shadow Resistance", ITEM_MOD_ARCANE_RESISTANCE_SHORT = "Arcane Resistance",
-  ITEM_MOD_MANA_REGENERATION_SHORT = "mana regeneration", ITEM_MOD_SPELL_POWER_SHORT = "spell power",
-  ITEM_MOD_HERBALISM_SHORT = "Herbalism", ITEM_MOD_CRIT_RATING_SHORT = "Crit", ITEM_MOD_HIT_RATING_SHORT = "Hit",
-  ITEM_MOD_DODGE_RATING_SHORT = "Dodge", ITEM_MOD_HEALTH_REGENERATION_SHORT = "health regeneration" }
-
-local function gearOut(it)
-  local o = { name = it.name, ilvl = it.ilvl, wid = it.id, loc = it.equipLoc }
-  local q = tostring(it.link or ""):match("|cnIQ(%d)")
-  if q then o.q = tonumber(q) end
-  local notes = {}
-  for k, v in pairs(it.stats or {}) do
-    if STAT[k] then
-      o[STAT[k]] = v
-    elseif NOTE[k] then
-      notes[#notes + 1] = "+" .. tostring(v) .. " " .. NOTE[k]
-    elseif not k:match("^RESISTANCE") then
-      notes[#notes + 1] = "+" .. tostring(v) .. " " .. k:gsub("ITEM_MOD_", ""):gsub("_SHORT", ""):gsub("_", " "):lower()
+      out[#out + 1] = "null"
     end
   end
-  table.sort(notes)
-  if #notes > 0 then o.note = table.concat(notes, ", ") end
-  return o
-end
 
-local FORM = { [0] = "Caster", [1] = "Bear", [2] = "Aquatic", [3] = "Cat", [4] = "Travel" }
+  local STAT = { ITEM_MOD_STRENGTH_SHORT = "str", ITEM_MOD_AGILITY_SHORT = "agi", ITEM_MOD_STAMINA_SHORT = "sta",
+    ITEM_MOD_INTELLECT_SHORT = "int", ITEM_MOD_SPIRIT_SHORT = "spi", ITEM_MOD_ATTACK_POWER_SHORT = "ap",
+    RESISTANCE0_NAME = "armor", ITEM_MOD_DAMAGE_PER_SECOND_SHORT = "dps" }
+  local NOTE = { ITEM_MOD_DEFENSE_SKILL_RATING_SHORT = "Defense", ITEM_MOD_FIRE_RESISTANCE_SHORT = "Fire Resistance",
+    ITEM_MOD_NATURE_RESISTANCE_SHORT = "Nature Resistance", ITEM_MOD_FROST_RESISTANCE_SHORT = "Frost Resistance",
+    ITEM_MOD_SHADOW_RESISTANCE_SHORT = "Shadow Resistance", ITEM_MOD_ARCANE_RESISTANCE_SHORT = "Arcane Resistance",
+    ITEM_MOD_MANA_REGENERATION_SHORT = "mana regeneration", ITEM_MOD_SPELL_POWER_SHORT = "spell power",
+    ITEM_MOD_HERBALISM_SHORT = "Herbalism", ITEM_MOD_CRIT_RATING_SHORT = "Crit", ITEM_MOD_HIT_RATING_SHORT = "Hit",
+    ITEM_MOD_DODGE_RATING_SHORT = "Dodge", ITEM_MOD_HEALTH_REGENERATION_SHORT = "health regeneration" }
 
--- VendorFloor ledger for the export: totals and an array of days, oldest first.
-local function vfOut(l)
-  if type(l) ~= "table" then return nil end
-  local days, keys = A(), {}
-  for k in pairs(l.days or {}) do keys[#keys + 1] = k end
-  table.sort(keys)
-  for _, k in ipairs(keys) do
-    local d = l.days[k]
-    days[#days + 1] = { d = k, spent = d.spent, sold = d.sold, profit = math.floor((d.sold or 0) - (d.soldCost or 0)) }
-  end
-  return { buys = l.buys, spent = l.spent, sold = l.sold, profit = l.profit,
-    unsoldUnits = l.unsoldUnits, unsoldValue = l.unsoldValue, days = days }
-end
-
--- Same document shapes the app database uses, so the app can import the text directly.
-local function buildExport(s)
-  local sheets = {}
-  if s.sheet and s.sheet.form ~= nil then
-    local sh = { date = s.date }
-    for k, v in pairs(s.sheet) do if k ~= "form" then sh[k] = v end end
-    sheets[FORM[s.sheet.form] or ("Form " .. tostring(s.sheet.form))] = sh
-  end
-  local items = {}
-  for id, c in pairs(s.items or {}) do items["i" .. id] = c end
-  local bagGear = A()
-  for _, g in ipairs(s.bagGear or {}) do bagGear[#bagGear + 1] = gearOut(g) end
-  local equippedOut = {}
-  for slot, it in pairs(s.equipped or {}) do
-    if slot ~= "shirt" and slot ~= "tabard" then equippedOut[slot] = gearOut(it) end
-  end
-  local sessions = A()
-  for _, x in ipairs(s.sessions or {}) do sessions[#sessions + 1] = x end
-  local talentList = A()
-  for _, t in ipairs((s.talents or {}).list or {}) do talentList[#talentList + 1] = { name = t.name, rank = t.rank, max = t.max } end
-  local rep = A()
-  for _, r in ipairs(s.reputation or {}) do rep[#rep + 1] = r end
-  local splits = A()
-  for _, x in ipairs(s.splits or {}) do splits[#splits + 1] = x end
-  local deaths = A()
-  local allDeaths = s.deaths or {}
-  for i = math.max(1, #allDeaths - 19), #allDeaths do deaths[#deaths + 1] = allDeaths[i] end
-  local goldDays = A()
-  local days = {}
-  for d in pairs(s.goldDays or {}) do days[#days + 1] = d end
-  table.sort(days)
-  for _, d in ipairs(days) do goldDays[#goldDays + 1] = { d = d, c = s.goldDays[d] } end
-  local months = A()
-  local mkeys = {}
-  for m in pairs(s.sessionMonths or {}) do mkeys[#mkeys + 1] = m end
-  table.sort(mkeys)
-  for _, m in ipairs(mkeys) do
-    local v = s.sessionMonths[m]
-    months[#months + 1] = { month = m, sessions = v.sessions, minutes = v.minutes, xp = v.xp, copper = v.copper }
-  end
-  local zones = A()
-  for name, z in pairs(s.zones or {}) do
-    zones[#zones + 1] = { zone = name, time = z.time, xp = z.xp, deaths = z.deaths, first = z.first, last = z.last }
-  end
-  table.sort(zones, function(a, b) return (a.time or 0) > (b.time or 0) end)
-  local zoneLevels = A()
-  for name, levels in pairs(s.zoneLevels or {}) do
-    for lvl, r in pairs(levels) do
-      if (r.t or 0) >= 60 or (r.x or 0) > 0 then
-        zoneLevels[#zoneLevels + 1] = { zone = name, level = tonumber(lvl), time = r.t, xp = r.x }
+  local function gearOut(it)
+    local o = { name = it.name, ilvl = it.ilvl, wid = it.id, loc = it.equipLoc }
+    local q = tostring(it.link or ""):match("|cnIQ(%d)")
+    if q then o.q = tonumber(q) end
+    local notes = {}
+    for k, v in pairs(it.stats or {}) do
+      if STAT[k] then
+        o[STAT[k]] = v
+      elseif NOTE[k] then
+        notes[#notes + 1] = "+" .. tostring(v) .. " " .. NOTE[k]
+      elseif not k:match("^RESISTANCE") then
+        notes[#notes + 1] = "+" .. tostring(v) .. " " .. k:gsub("ITEM_MOD_", ""):gsub("_SHORT", ""):gsub("_", " "):lower()
       end
     end
+    tsort(notes)
+    if #notes > 0 then o.note = tconcat(notes, ", ") end
+    return o
   end
-  local dungeons = A()
-  for _, d in ipairs(s.dungeons or {}) do dungeons[#dungeons + 1] = d end
-  local trees = A()
-  for _, t in ipairs((s.talents or {}).trees or {}) do trees[#trees + 1] = { name = t.name, points = t.points or 0 } end
-  local logDone = 0
-  for _, q in ipairs(s.questLog or {}) do if q.complete then logDone = logDone + 1 end end
-  local questStats = { completed = #(s.completedQuests or {}), log = #(s.questLog or {}), logComplete = logDone,
-    byLevel = s.questsByLevel }
-  local char = { name = s.name, realm = s.realm, class = s.class, race = s.race, date = s.date, ts = s.ts,
-    addonVersion = s.version, level = s.level, xp = s.xp, xpMax = s.xpMax,
-    online = s.online, splits = splits, levelSince = s.levelSince, xpSources = s.xpSources,
-    deaths = deaths, deathCount = s.deathCount or #allDeaths, goldDays = goldDays, repairs = s.repairs,
-    sessionMonths = months, libraryBooks = s.libraryBooks, zones = zones, pace = pace(s), vendorFloor = vfOut(vendorFloorLedger()),
-    deathsByLevel = s.deathsByLevel, firstLevel = s.firstLevel,
-    zoneLevels = zoneLevels, dungeons = dungeons, dungeonRun = s.dungeonRun and { name = s.dungeonRun.name, date = s.dungeonRun.date } or nil,
-    travel = s.travel, questStats = questStats, talentTrees = trees,
-    rested = s.rested, copper = s.copper, zone = s.zone, subzone = s.subzone, hearth = s.hearth,
-    bags = A({ s.bags[1] or 0, s.bags[2] or 0, s.bags[3] or 0, s.bags[4] or 0 }), backpack = s.bags.backpack,
-    reagentBag = s.reagentBag, freeSlots = s.freeSlots, professions = s.professions, reputation = rep, sheets = sheets,
-    sessions = sessions, items = items, bagGear = bagGear, talents = talentList, unspent = s.talents and s.talents.unspent,
-    bank = s.bank and { date = s.bank.date, kinds = s.bank.kinds } or nil }
-  local log = A()
-  for _, q in ipairs(s.questLog or {}) do
-    local objs = A()
-    for _, o in ipairs(q.objectives or {}) do objs[#objs + 1] = { text = o.text, done = o.done } end
-    log[#log + 1] = { id = q.id, title = q.title, level = q.level, complete = q.complete, objectives = objs }
-  end
-  local known, open = {}, {}
-  for prof, r in pairs(s.recipes or {}) do
-    known[prof] = A()
-    for _, x in ipairs(r.known or {}) do known[prof][#known[prof] + 1] = x.name end
-    open[prof] = A()
-    -- still gives skill: optimal (0), medium (1) or easy (2); trivial is 3
-    for _, x in ipairs(r.unknown or {}) do
-      if x.difficulty and x.difficulty < 3 then open[prof][#open[prof] + 1] = x.name end
+
+  local FORM = { [0] = "Caster", [1] = "Bear", [2] = "Aquatic", [3] = "Cat", [4] = "Travel" }
+  local function sortZonesByTime(a, b) return (a.time or 0) > (b.time or 0) end
+
+  -- VendorFloor ledger for the export: totals and an array of days, oldest first.
+  local function vfOut(l)
+    if type(l) ~= "table" then return nil end
+    local days, keys = A(), {}
+    for k in pairs(l.days or {}) do keys[#keys + 1] = k end
+    tsort(keys)
+    for _, k in ipairs(keys) do
+      local d = l.days[k]
+      days[#days + 1] = { d = k, spent = d.spent, sold = d.sold, profit = floor((d.sold or 0) - (d.soldCost or 0)) }
     end
+    return { buys = l.buys, spent = l.spent, sold = l.sold, profit = l.profit,
+      unsoldUnits = l.unsoldUnits, unsoldValue = l.unsoldValue, days = days }
   end
-  local best, order = {}, {}
-  for _, sp in ipairs(s.spells or {}) do
-    -- "Rank 3", "Rang 3", "Rango 3": the number is the rank in every language
-    local r = tonumber((sp.sub or ""):match("(%d+)")) or 0
-    if not best[sp.name] then
-      best[sp.name] = { name = sp.name, rank = r, tab = sp.tab }
-      order[#order + 1] = sp.name
-    elseif r > best[sp.name].rank then
-      best[sp.name].rank = r
+
+  -- Same document shapes the app database uses, so the app can import the text directly.
+  buildExport = function(s)
+    local sheets = {}
+    if s.sheet and s.sheet.form ~= nil then
+      local sh = { date = s.date }
+      for k, v in pairs(s.sheet) do if k ~= "form" then sh[k] = v end end
+      sheets[FORM[s.sheet.form] or ("Form " .. tostring(s.sheet.form))] = sh
     end
+    local items = {}
+    for id, c in pairs(s.items or {}) do items["i" .. id] = c end
+    local bagGear = A()
+    for _, g in ipairs(s.bagGear or {}) do bagGear[#bagGear + 1] = gearOut(g) end
+    local equippedOut = {}
+    for slot, it in pairs(s.equipped or {}) do
+      if slot ~= "shirt" and slot ~= "tabard" then equippedOut[slot] = gearOut(it) end
+    end
+    local sessions = A()
+    for _, x in ipairs(s.sessions or {}) do sessions[#sessions + 1] = x end
+    local talentList = A()
+    for _, t in ipairs((s.talents or {}).list or {}) do talentList[#talentList + 1] = { name = t.name, rank = t.rank, max = t.max } end
+    local rep = A()
+    for _, r in ipairs(s.reputation or {}) do rep[#rep + 1] = r end
+    local splits = A()
+    for _, x in ipairs(s.splits or {}) do splits[#splits + 1] = x end
+    local deaths = A()
+    local allDeaths = s.deaths or {}
+    for i = max(1, #allDeaths - 19), #allDeaths do deaths[#deaths + 1] = allDeaths[i] end
+    local goldDays = A()
+    local days = {}
+    for d in pairs(s.goldDays or {}) do days[#days + 1] = d end
+    tsort(days)
+    for _, d in ipairs(days) do goldDays[#goldDays + 1] = { d = d, c = s.goldDays[d] } end
+    local months = A()
+    local mkeys = {}
+    for m in pairs(s.sessionMonths or {}) do mkeys[#mkeys + 1] = m end
+    tsort(mkeys)
+    for _, m in ipairs(mkeys) do
+      local v = s.sessionMonths[m]
+      months[#months + 1] = { month = m, sessions = v.sessions, minutes = v.minutes, xp = v.xp, copper = v.copper }
+    end
+    local zones = A()
+    for name, z in pairs(s.zones or {}) do
+      zones[#zones + 1] = { zone = name, time = z.time, xp = z.xp, deaths = z.deaths, first = z.first, last = z.last }
+    end
+    tsort(zones, sortZonesByTime)
+    local zoneLevels = A()
+    for name, levels in pairs(s.zoneLevels or {}) do
+      for lvl, r in pairs(levels) do
+        if (r.t or 0) >= 60 or (r.x or 0) > 0 then
+          zoneLevels[#zoneLevels + 1] = { zone = name, level = tonumber(lvl), time = r.t, xp = r.x }
+        end
+      end
+    end
+    local dungeons = A()
+    for _, d in ipairs(s.dungeons or {}) do dungeons[#dungeons + 1] = d end
+    local trees = A()
+    for _, t in ipairs((s.talents or {}).trees or {}) do trees[#trees + 1] = { name = t.name, points = t.points or 0 } end
+    local logDone = 0
+    for _, q in ipairs(s.questLog or {}) do if q.complete then logDone = logDone + 1 end end
+    local questStats = { completed = #(s.completedQuests or {}), log = #(s.questLog or {}), logComplete = logDone,
+      byLevel = s.questsByLevel }
+    local char = { name = s.name, realm = s.realm, class = s.class, race = s.race, date = s.date, ts = s.ts,
+      addonVersion = s.version, level = s.level, xp = s.xp, xpMax = s.xpMax,
+      online = s.online, splits = splits, levelSince = s.levelSince, xpSources = s.xpSources,
+      deaths = deaths, deathCount = s.deathCount or #allDeaths, goldDays = goldDays, repairs = s.repairs,
+      sessionMonths = months, libraryBooks = s.libraryBooks, zones = zones, pace = pace(s), vendorFloor = vfOut(vendorFloorLedger()),
+      deathsByLevel = s.deathsByLevel, firstLevel = s.firstLevel,
+      zoneLevels = zoneLevels, dungeons = dungeons, dungeonRun = s.dungeonRun and { name = s.dungeonRun.name, date = s.dungeonRun.date } or nil,
+      travel = s.travel, questStats = questStats, talentTrees = trees,
+      rested = s.rested, copper = s.copper, zone = s.zone, subzone = s.subzone, hearth = s.hearth,
+      bags = A({ s.bags[1] or 0, s.bags[2] or 0, s.bags[3] or 0, s.bags[4] or 0 }), backpack = s.bags.backpack,
+      reagentBag = s.reagentBag, freeSlots = s.freeSlots, professions = s.professions, reputation = rep, sheets = sheets,
+      sessions = sessions, items = items, bagGear = bagGear, talents = talentList, unspent = s.talents and s.talents.unspent,
+      bank = s.bank and { date = s.bank.date, kinds = s.bank.kinds } or nil }
+    local log = A()
+    for _, q in ipairs(s.questLog or {}) do
+      local objs = A()
+      for _, o in ipairs(q.objectives or {}) do objs[#objs + 1] = { text = o.text, done = o.done } end
+      log[#log + 1] = { id = q.id, title = q.title, level = q.level, complete = q.complete, objectives = objs }
+    end
+    local known, open = {}, {}
+    for prof, r in pairs(s.recipes or {}) do
+      known[prof] = A()
+      for _, x in ipairs(r.known or {}) do known[prof][#known[prof] + 1] = x.name end
+      open[prof] = A()
+      -- still gives skill: optimal (0), medium (1) or easy (2); trivial is 3
+      for _, x in ipairs(r.unknown or {}) do
+        if x.difficulty and x.difficulty < 3 then open[prof][#open[prof] + 1] = x.name end
+      end
+    end
+    local best, order = {}, {}
+    for _, sp in ipairs(s.spells or {}) do
+      -- "Rank 3", "Rang 3", "Rango 3": the number is the rank in every language
+      local r = tonumber((sp.sub or ""):match("(%d+)")) or 0
+      if not best[sp.name] then
+        best[sp.name] = { name = sp.name, rank = r, tab = sp.tab }
+        order[#order + 1] = sp.name
+      elseif r > best[sp.name].rank then
+        best[sp.name].rank = r
+      end
+    end
+    local completed = A()
+    for i, id in ipairs(s.completedQuests or {}) do completed[i] = id end
+    local spellList = A()
+    for _, n in ipairs(order) do spellList[#spellList + 1] = best[n] end
+    return { levelTrail = 4, char = char,
+      quests = { date = s.date, log = log, completed = completed },
+      recipes = { date = s.date, known = known, inRange = open },
+      spells = { date = s.date, spells = spellList },
+      equipped = equippedOut }
   end
-  local completed = A()
-  for i, id in ipairs(s.completedQuests or {}) do completed[i] = id end
-  local spellList = A()
-  for _, n in ipairs(order) do spellList[#spellList + 1] = best[n] end
-  return { levelTrail = 4, char = char,
-    quests = { date = s.date, log = log, completed = completed },
-    recipes = { date = s.date, known = known, inRange = open },
-    spells = { date = s.date, spells = spellList },
-    equipped = equippedOut }
 end
 
 ---------------------------------------------------------------- report a bug
@@ -1895,64 +1935,76 @@ end
 
 local function lineSize(key)
   local v = tonumber(hudSettings().sizes[key])
-  return v and math.min(math.max(v, HUD_SIZE_MIN), HUD_SIZE_MAX) or HUD_SIZE_DEFAULT
+  return v and min(max(v, HUD_SIZE_MIN), HUD_SIZE_MAX) or HUD_SIZE_DEFAULT
 end
 
 -- The tracker's lines as { key, text } in the chosen order.
 -- all = true for the minimap tooltip, which always shows every line.
-local function hudLineList(all)
-  local s = store()
-  local p = pace(s)
-  local byKey = {}
-  local function add(key, text)
-    if all or lineOn(key) then byKey[key] = text end
-  end
-  local xp, xpMax = UnitXP("player") or 0, UnitXPMax("player") or 0
-  if p.atCap then
-    add("level", ("Level %d, the cap"):format(p.level))
-  else
-    add("level", ("Level %d  %d%%"):format(p.level, xpMax > 0 and math.floor(xp / xpMax * 100) or 0))
-  end
-  local since = s.levelSince
-  if since and since.level == p.level and s.online and since.online then
-    add("onLevel", "On this level: " .. hm(s.online - since.online) .. (since.partial and " (since install)" or ""))
-  end
-  if p.sessionXpPerHour then
-    add("session", "Session: " .. thousands(p.sessionXpPerHour) .. " XP/h, " .. hm((p.sessionMinutes or 0) * 60))
-  elseif p.sessionMinutes then
-    add("session", "Session: " .. hm(p.sessionMinutes * 60))
-  end
-  if p.xpPerHour then
-    add("pace", "Pace: " .. thousands(p.xpPerHour) .. " XP/h (last " .. (p.levelsUsed or 0) .. " levels)")
-  end
-  if not p.atCap then
-    if p.secToNext then
-      add("next", "Next level: " .. hm(p.secToNext))
-      add("cap", ("Level %d: %s online"):format(p.maxLevel, hm(p.secToCap)))
-    else
-      add("next", "Time to level: after the first full level")
-    end
-  end
-  local lines = {}
-  for _, key in ipairs(lineOrder()) do
-    if byKey[key] then lines[#lines + 1] = { key = key, text = byKey[key] } end
-  end
-  return lines
-end
+local hudLineList
+do
+  local hudByKey, hudListBuf, hudEntryPool = {}, {}, {}
 
-local function hudLines(all)
-  local out = {}
-  for _, l in ipairs(hudLineList(all)) do out[#out + 1] = l.text end
-  return table.concat(out, "\n")
+  hudLineList = function(all)
+    local s = store()
+    local p = pace(s)
+    wipe(hudByKey)
+    wipe(hudListBuf)
+    local xp, xpMax = UnitXP("player") or 0, UnitXPMax("player") or 0
+    if all or lineOn("level") then
+      if p.atCap then
+        hudByKey.level = ("Level %d, the cap"):format(p.level)
+      else
+        hudByKey.level = ("Level %d  %d%%"):format(p.level, xpMax > 0 and floor(xp / xpMax * 100) or 0)
+      end
+    end
+    local since = s.levelSince
+    if (all or lineOn("onLevel")) and since and since.level == p.level and s.online and since.online then
+      hudByKey.onLevel = "On this level: " .. hm(s.online - since.online) .. (since.partial and " (since install)" or "")
+    end
+    if all or lineOn("session") then
+      if p.sessionXpPerHour then
+        hudByKey.session = "Session: " .. thousands(p.sessionXpPerHour) .. " XP/h, " .. hm((p.sessionMinutes or 0) * 60)
+      elseif p.sessionMinutes then
+        hudByKey.session = "Session: " .. hm(p.sessionMinutes * 60)
+      end
+    end
+    if (all or lineOn("pace")) and p.xpPerHour then
+      hudByKey.pace = "Pace: " .. thousands(p.xpPerHour) .. " XP/h (last " .. (p.levelsUsed or 0) .. " levels)"
+    end
+    if not p.atCap then
+      if p.secToNext then
+        if all or lineOn("next") then hudByKey.next = "Next level: " .. hm(p.secToNext) end
+        if all or lineOn("cap") then hudByKey.cap = ("Level %d: %s online"):format(p.maxLevel, hm(p.secToCap)) end
+      elseif all or lineOn("next") then
+        hudByKey.next = "Time to level: after the first full level"
+      end
+    end
+    local n = 0
+    for _, key in ipairs(lineOrder()) do
+      local text = hudByKey[key]
+      if text then
+        n = n + 1
+        local e = hudEntryPool[n]
+        if not e then
+          e = {}
+          hudEntryPool[n] = e
+        end
+        e.key, e.text = key, text
+        hudListBuf[n] = e
+      end
+    end
+    return hudListBuf
+  end
 end
 
 -- One text per line, stacked in the chosen order, each in its own size.
 local HUD_GAP = 2
+local HUD_EMPTY_LINES = { { key = "none", text = "LevelTrail: no lines chosen" } }
 hudUpdate = function()
   if not (hud and hud:IsShown()) then return end
   local ok, lines = pcall(hudLineList)
   if not ok then lines = { { key = "error", text = "LevelTrail: " .. tostring(lines) } }
-  elseif #lines == 0 then lines = { { key = "none", text = "LevelTrail: no lines chosen" } } end
+  elseif #lines == 0 then lines = HUD_EMPTY_LINES end
   local t = hudSettings()
   local align = HUD_ALIGN[t.align] and t.align or "LEFT"
   local font = hud.font
@@ -2053,91 +2105,99 @@ local function hudSavePosition()
   st.hud.point, st.hud.rel, st.hud.x, st.hud.y = point, rel, x, y
 end
 
--- Edit Mode's "Snap" setting (snap to elements), and the frames it places.
-local function editModeSnapOn()
-  local m = EditModeManagerFrame
-  if not (m and m.IsSnapEnabled) then return false end
-  local ok, on = pcall(m.IsSnapEnabled, m)
-  return ok and on and true or false
-end
-
-local function editModeFrames()
-  local m = EditModeManagerFrame
-  local list = m and m.registeredSystemFrames
-  return type(list) == "table" and list or {}
-end
-
--- Rectangle of a frame in the tracker's coordinates: left, right, bottom, top.
-local function rectIn(frame)
-  local ok, l, r, b, t = pcall(function()
-    if not (frame and frame:IsVisible()) then return nil end
-    local l, r, b, t = frame:GetLeft(), frame:GetRight(), frame:GetBottom(), frame:GetTop()
-    if not (l and r and b and t) then return nil end
-    local k = frame:GetEffectiveScale() / hud:GetEffectiveScale()
-    return l * k, r * k, b * k, t * k
-  end)
-  if ok and l then return l, r, b, t end
-  return nil
-end
-
--- With "Snap" on in Edit Mode, the tracker snaps flush to the edges and centres of the
--- game's other Edit Mode frames, to the screen edges and to the screen centre lines.
--- Without it, it stays exactly where it is dropped.
-local SNAP_RANGE = 12 -- pixels (screen) within which an edge snaps
 -- The shift that puts the nearest of edges onto a target, and which edge that was (index).
 local function snapOffset(edges, targets, range)
-  local best, which
+  local best, bestAbs, which
   for i, e in ipairs(edges) do
     for _, tv in ipairs(targets) do
       local d = tv - e
-      if math.abs(d) <= range and (not best or math.abs(d) < math.abs(best)) then best, which = d, i end
+      local ad = abs(d)
+      if ad <= range and (not bestAbs or ad < bestAbs) then best, bestAbs, which = d, ad, i end
     end
   end
   return best or 0, which
 end
 
-local function snapToElements(l, r, b, t)
-  local k = UIParent:GetEffectiveScale() / hud:GetEffectiveScale()
-  local range = SNAP_RANGE * k
-  local W, H = UIParent:GetWidth() * k, UIParent:GetHeight() * k
-  local xs, ys = { 0, W / 2, W }, { 0, H / 2, H }
-  for _, other in ipairs(editModeFrames()) do
-    if other ~= hud then
-      local fl, fr, fb, ft = rectIn(other)
-      if fl then
-        -- a frame counts for one axis only when it is near on the other one
-        if fb - range <= t and b <= ft + range then
-          xs[#xs + 1], xs[#xs + 2], xs[#xs + 3] = fl, fr, (fl + fr) / 2
-        end
-        if fl - range <= r and l <= fr + range then
-          ys[#ys + 1], ys[#ys + 2], ys[#ys + 3] = fb, ft, (fb + ft) / 2
+-- With "Snap" on in Edit Mode, the tracker snaps flush to the edges and centres of the
+-- game's other Edit Mode frames, to the screen edges and to the screen centre lines.
+-- Without it, it stays exactly where it is dropped.
+local hudPlace
+do
+  local SNAP_RANGE = 12 -- pixels (screen) within which an edge snaps
+  local snapXs, snapYs, snapEdges = {}, {}, {}
+
+  local function editModeSnapOn()
+    local m = EditModeManagerFrame
+    if not (m and m.IsSnapEnabled) then return false end
+    local ok, on = pcall(m.IsSnapEnabled, m)
+    return ok and on and true or false
+  end
+
+  local function readRect(frame, hudScale)
+    if not (frame and frame:IsVisible()) then return nil end
+    local l, r, b, t = frame:GetLeft(), frame:GetRight(), frame:GetBottom(), frame:GetTop()
+    if not (l and r and b and t) then return nil end
+    local k = frame:GetEffectiveScale() / hudScale
+    return l * k, r * k, b * k, t * k
+  end
+
+  local function rectIn(frame, hudScale)
+    local ok, l, r, b, t = pcall(readRect, frame, hudScale)
+    if ok and l then return l, r, b, t end
+    return nil
+  end
+
+  local function snapToElements(l, r, b, t)
+    local hudScale = hud:GetEffectiveScale()
+    local k = UIParent:GetEffectiveScale() / hudScale
+    local range = SNAP_RANGE * k
+    local W, H = UIParent:GetWidth() * k, UIParent:GetHeight() * k
+    wipe(snapXs); wipe(snapYs)
+    snapXs[1], snapXs[2], snapXs[3] = 0, W / 2, W
+    snapYs[1], snapYs[2], snapYs[3] = 0, H / 2, H
+    local frames = EditModeManagerFrame and EditModeManagerFrame.registeredSystemFrames
+    if type(frames) == "table" then
+      for _, other in ipairs(frames) do
+        if other ~= hud then
+          local fl, fr, fb, ft = rectIn(other, hudScale)
+          if fl then
+            -- a frame counts for one axis only when it is near on the other one
+            if fb - range <= t and b <= ft + range then
+              snapXs[#snapXs + 1], snapXs[#snapXs + 2], snapXs[#snapXs + 3] = fl, fr, (fl + fr) / 2
+            end
+            if fl - range <= r and l <= fr + range then
+              snapYs[#snapYs + 1], snapYs[#snapYs + 2], snapYs[#snapYs + 3] = fb, ft, (fb + ft) / 2
+            end
+          end
         end
       end
     end
+    snapEdges[1], snapEdges[2], snapEdges[3] = l, r, (l + r) / 2
+    local dx = snapOffset(snapEdges, snapXs, range)
+    snapEdges[1], snapEdges[2], snapEdges[3] = b, t, (b + t) / 2
+    local dy, edge = snapOffset(snapEdges, snapYs, range)
+    return dx, dy, edge == 1 and "BOTTOM" or edge == 2 and "TOP" or nil
   end
-  local dx = snapOffset({ l, r, (l + r) / 2 }, xs, range)
-  local dy, edge = snapOffset({ b, t, (b + t) / 2 }, ys, range)
-  return dx, dy, edge == 1 and "BOTTOM" or edge == 2 and "TOP" or nil
-end
 
--- The tracker is held at one edge, so it grows and shrinks from the other one when lines
--- change: the edge it snapped to in Edit Mode, else the edge nearer the screen's border
--- (lower half: its bottom edge, upper half: its top edge).
-local function hudPlace()
-  local l, r, b, t = hud:GetLeft(), hud:GetRight(), hud:GetBottom(), hud:GetTop()
-  if not (l and r and b and t) then return end
-  local dx, dy, edge = 0, 0, nil
-  if editMode and editModeSnapOn() then
-    local ok, x, y, e = pcall(snapToElements, l, r, b, t)
-    if ok then dx, dy, edge = x, y, e end
+  -- The tracker is held at one edge, so it grows and shrinks from the other one when lines
+  -- change: the edge it snapped to in Edit Mode, else the edge nearer the screen's border
+  -- (lower half: its bottom edge, upper half: its top edge).
+  hudPlace = function()
+    local l, r, b, t = hud:GetLeft(), hud:GetRight(), hud:GetBottom(), hud:GetTop()
+    if not (l and r and b and t) then return end
+    local dx, dy, edge = 0, 0, nil
+    if editMode and editModeSnapOn() then
+      local ok, x, y, e = pcall(snapToElements, l, r, b, t)
+      if ok then dx, dy, edge = x, y, e end
+    end
+    if not edge then
+      local mid = UIParent:GetHeight() * UIParent:GetEffectiveScale() / hud:GetEffectiveScale() / 2
+      edge = (b + t) / 2 < mid and "BOTTOM" or "TOP"
+    end
+    hud:ClearAllPoints()
+    hud:SetPoint(edge, UIParent, "BOTTOMLEFT", (l + r) / 2 + dx, (edge == "BOTTOM" and b or t) + dy)
+    hudSavePosition()
   end
-  if not edge then
-    local mid = UIParent:GetHeight() * UIParent:GetEffectiveScale() / hud:GetEffectiveScale() / 2
-    edge = (b + t) / 2 < mid and "BOTTOM" or "TOP"
-  end
-  hud:ClearAllPoints()
-  hud:SetPoint(edge, UIParent, "BOTTOMLEFT", (l + r) / 2 + dx, (edge == "BOTTOM" and b or t) + dy)
-  hudSavePosition()
 end
 
 local function hudCreate()
@@ -2192,7 +2252,7 @@ local function hudCreate()
       local over = self:IsMouseOver()
       if over ~= self.over then
         self.over = over
-        self:SetAlpha(over and 1 or math.max(o, 0))
+        self:SetAlpha(over and 1 or max(o, 0))
       end
     end
   end)
@@ -2247,12 +2307,12 @@ local function showOptions()
     function() return t.locked end, function(v) t.locked = v; hudApplyLook() end)
   win:Check(L, -120, "Hide in combat", "Hides the tracker while you are in combat.",
     function() return t.hideInCombat end, function(v) t.hideInCombat = v; hudRefreshShown() end)
-  win:Slider(L, -154, "Size", 50, 200, 10, function() return math.floor(t.scale * 100 + 0.5) end,
+  win:Slider(L, -154, "Size", 50, 200, 10, function() return floor(t.scale * 100 + 0.5) end,
     function(v) t.scale = v / 100; hudApplyLook() end, "Scale of the tracker.", 150, function(v) return v .. "%" end)
-  win:Slider(L, -200, "Background", 0, 100, 10, function() return math.floor(t.alpha * 100 + 0.5) end,
+  win:Slider(L, -200, "Background", 0, 100, 10, function() return floor(t.alpha * 100 + 0.5) end,
     function(v) t.alpha = v / 100; hudApplyLook() end, "Opacity of the background. 0% shows only the text.", 150,
     function(v) return v .. "%" end)
-  win:Slider(L, -244, "Window opacity", 0, 100, 10, function() return math.floor((t.opacity or 1) * 100 + 0.5) end,
+  win:Slider(L, -244, "Window opacity", 0, 100, 10, function() return floor((t.opacity or 1) * 100 + 0.5) end,
     function(v) t.opacity = v / 100; hudApplyLook() end,
     "Opacity of the whole tracker, text included. With the mouse over it, it is fully visible.", 150,
     function(v) return v .. "%" end)
@@ -2280,10 +2340,10 @@ local function showOptions()
     r.up = small("^", "Move this line up.", function() moveLine(key, -1); hudUpdate() end)
     r.down = small("v", "Move this line down.", function() moveLine(key, 1); hudUpdate() end)
     r.minus = small("-", "Smaller text for this line.", function()
-      t.sizes[key] = math.max(lineSize(key) - 1, HUD_SIZE_MIN); hudUpdate()
+      t.sizes[key] = max(lineSize(key) - 1, HUD_SIZE_MIN); hudUpdate()
     end)
     r.plus = small("+", "Larger text for this line.", function()
-      t.sizes[key] = math.min(lineSize(key) + 1, HUD_SIZE_MAX); hudUpdate()
+      t.sizes[key] = min(lineSize(key) + 1, HUD_SIZE_MAX); hudUpdate()
     end)
     r.size = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     r.size:SetWidth(22)
@@ -2382,9 +2442,9 @@ end
 
 local function minimapTooltip(tip)
   tip:AddLine(TITLE)
-  local ok, text = pcall(hudLines, true)
-  if ok and text then
-    for line in text:gmatch("[^\n]+") do tip:AddLine(line, 1, 1, 1) end
+  local ok, lines = pcall(hudLineList, true)
+  if ok and lines then
+    for _, l in ipairs(lines) do tip:AddLine(l.text, 1, 1, 1) end
   end
   tip:AddLine(" ")
   tip:AddLine("Left-click: settings", 0.6, 0.8, 1)
@@ -2438,13 +2498,15 @@ local function count(t)
 end
 
 -- Other records of this character name (the realm text changed, e.g. "?" before the game knew it).
+local function sortByRecordTs(a, b) return (a.rec.ts or 0) < (b.rec.ts or 0) end
+
 local function otherRecords()
   local key, name = charKey()
   local list = {}
   for k, rec in pairs(LevelTrailDB or {}) do
     if k ~= key and type(rec) == "table" and rec.name == name then list[#list + 1] = { key = k, rec = rec } end
   end
-  table.sort(list, function(a, b) return (a.rec.ts or 0) < (b.rec.ts or 0) end)
+  tsort(list, sortByRecordTs)
   return list
 end
 
@@ -2455,7 +2517,7 @@ local function exportRecord(rec, summary)
   local out = {}
   local okJ, err = pcall(enc, data, out)
   if not okJ then print("|cffff5555LevelTrail: encoding failed:|r " .. tostring(err)) return true end
-  local okS, err2 = pcall(showExport, table.concat(out), summary)
+  local okS, err2 = pcall(showExport, tconcat(out), summary)
   if not okS then print("|cffff5555LevelTrail: window failed:|r " .. tostring(err2)) end
   return okS
 end
@@ -2519,8 +2581,8 @@ SlashCmdList["LEVELTRAIL"] = function(msg)
     return
   end
   if not ok or not s then print("|cffff5555LevelTrail: snapshot failed:|r " .. tostring(s)) return end
-  local g = math.floor(s.copper / 10000)
-  local sv = math.floor((s.copper % 10000) / 100)
+  local g = floor(s.copper / 10000)
+  local sv = floor((s.copper % 10000) / 100)
   local tal = talentCount(s.talents)
   local lb = s.libraryBooks
   local summary = "Level " .. tostring(s.level) .. ", " .. g .. "g " .. sv .. "s, " .. tostring(s.zone) ..
