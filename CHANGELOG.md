@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.5.8
 
 - Code cleanup, no change in behaviour.
 - Settings window: "More from Bencepo" button in the footer links to all Bencepo addons (BencepoUI 6).
